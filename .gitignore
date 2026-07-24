@@ -1,0 +1,36 @@
+# Celar Protocol — build & local state
+# (repo-wide ignores also live in ../.gitignore)
+
+# Go build artifacts (chain/celard)
+*.exe
+*.test
+*.out
+coverage.txt
+profile.out
+chain/celard/celard
+
+# Local node / devnet home data — never commit chain state
+.evmd/
+.celard/
+.testnets/
+**/node[0-9]*/
+data/
+*.db
+
+# Validator & node secrets — MUST never be committed
+priv_validator_key.json
+priv_validator_state.json
+node_key.json
+*.mnemonic
+*.seed
+
+# Python
+__pycache__/
+*.pyc
+
+# OS / editor
+.DS_Store
+._*
+.vscode/
+.idea/
+*.swp
