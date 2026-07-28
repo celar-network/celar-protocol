@@ -21,9 +21,9 @@ import (
 	dbm "github.com/cosmos/cosmos-db"
 	evmante "github.com/cosmos/evm/ante"
 	antetypes "github.com/cosmos/evm/ante/types"
-	precisebank "github.com/cosmos/evm/contrib/x/precisebank"
-	precisebankkeeper "github.com/cosmos/evm/contrib/x/precisebank/keeper"
-	precisebanktypes "github.com/cosmos/evm/contrib/x/precisebank/types"
+	precisebank "github.com/cosmos/evm/evmd/precisebank"
+	precisebankkeeper "github.com/cosmos/evm/evmd/precisebank/keeper"
+	precisebanktypes "github.com/cosmos/evm/evmd/precisebank/types"
 	evmencoding "github.com/cosmos/evm/encoding"
 	evmaddress "github.com/cosmos/evm/encoding/address"
 	evmconfig "github.com/cosmos/evm/evmd/config"
@@ -503,7 +503,7 @@ func NewExampleApp(
 	)
 
 	// enable virtual fee collection
-	app.EVMKeeper.EnableVirtualFeeCollection()
+	// app.EVMKeeper.EnableVirtualFeeCollection() // disabled: unsupported for 9-dec display (panics in DeductFees)
 
 	app.Erc20Keeper = erc20keeper.NewKeeper(
 		keys[erc20types.StoreKey],

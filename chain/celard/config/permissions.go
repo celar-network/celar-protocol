@@ -9,7 +9,7 @@ import (
 	govtypes "github.com/cosmos/cosmos-sdk/x/gov/types"
 	minttypes "github.com/cosmos/cosmos-sdk/x/mint/types"
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
-	precisebanktypes "github.com/cosmos/evm/contrib/x/precisebank/types"
+	precisebanktypes "github.com/cosmos/evm/evmd/precisebank/types"
 	cosmosevmutils "github.com/cosmos/evm/utils"
 	erc20types "github.com/cosmos/evm/x/erc20/types"
 	feemarkettypes "github.com/cosmos/evm/x/feemarket/types"
