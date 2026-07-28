@@ -17,20 +17,20 @@ import (
 	abci "github.com/cometbft/cometbft/abci/types"
 	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
 
+	sdkmath "cosmossdk.io/math"
 	dbm "github.com/cosmos/cosmos-db"
 	evmante "github.com/cosmos/evm/ante"
 	antetypes "github.com/cosmos/evm/ante/types"
+	precisebank "github.com/cosmos/evm/contrib/x/precisebank"
+	precisebankkeeper "github.com/cosmos/evm/contrib/x/precisebank/keeper"
+	precisebanktypes "github.com/cosmos/evm/contrib/x/precisebank/types"
 	evmencoding "github.com/cosmos/evm/encoding"
 	evmaddress "github.com/cosmos/evm/encoding/address"
 	evmconfig "github.com/cosmos/evm/evmd/config"
 	evmmempool "github.com/cosmos/evm/mempool"
 	precompiletypes "github.com/cosmos/evm/precompiles/types"
-	precisebank "github.com/cosmos/evm/contrib/x/precisebank"
-	precisebankkeeper "github.com/cosmos/evm/contrib/x/precisebank/keeper"
-	precisebanktypes "github.com/cosmos/evm/contrib/x/precisebank/types"
 	cosmosevmserver "github.com/cosmos/evm/server"
 	srvflags "github.com/cosmos/evm/server/flags"
-	"github.com/cosmos/evm/utils"
 	"github.com/cosmos/evm/x/erc20"
 	erc20keeper "github.com/cosmos/evm/x/erc20/keeper"
 	erc20types "github.com/cosmos/evm/x/erc20/types"
@@ -133,12 +133,12 @@ import (
 
 func init() {
 	// manually update the power reduction by replacing micro (u) -> atto (a) evmos
-	sdk.DefaultPowerReduction = utils.AttoPowerReduction
+	sdk.DefaultPowerReduction = sdkmath.NewInt(1_000_000_000)
 
 	defaultNodeHome = evmconfig.MustGetDefaultNodeHome()
 }
 
-const appName = "evmd"
+const appName = "celard"
 
 // defaultNodeHome default home directories for the application daemon
 var defaultNodeHome string
@@ -676,7 +676,6 @@ func NewExampleApp(
 	// NOTE: The genutils module must also occur after auth so that it can access the params from auth.
 	genesisModuleOrder := []string{
 		authtypes.ModuleName, banktypes.ModuleName,
-		precisebanktypes.ModuleName,
 		distrtypes.ModuleName, stakingtypes.ModuleName, slashingtypes.ModuleName, govtypes.ModuleName,
 		minttypes.ModuleName,
 		ibcexported.ModuleName,
@@ -688,7 +687,7 @@ func NewExampleApp(
 		evmtypes.ModuleName,
 		feemarkettypes.ModuleName,
 		erc20types.ModuleName,
-
+		precisebanktypes.ModuleName,
 		ibctransfertypes.ModuleName,
 		genutiltypes.ModuleName, evidencetypes.ModuleName, authz.ModuleName,
 		feegrant.ModuleName, upgradetypes.ModuleName, vestingtypes.ModuleName,

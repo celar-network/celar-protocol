@@ -7,7 +7,7 @@ import (
 )
 
 func MustGetDefaultNodeHome() string {
-	defaultNodeHome, err := clienthelpers.GetNodeHomeDirectory(".evmd")
+	defaultNodeHome, err := clienthelpers.GetNodeHomeDirectory(".celard")
 	if err != nil {
 		panic(err)
 	}

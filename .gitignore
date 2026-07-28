@@ -7,7 +7,6 @@
 *.out
 coverage.txt
 profile.out
-chain/celard/celard
 
 # Local node / devnet home data — never commit chain state
 .evmd/

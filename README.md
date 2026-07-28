@@ -22,14 +22,15 @@ precompile ABI in `fhe/backend-adapter` is held fixed and backend-agnostic.
 Validation models (committee capture, economics) live in `../sim/`. Live
 programme state and the build log are in `../doc/`.
 
-## Chain build — `celard`
+## Chain — `celard`
 
-`chain/celard` is a fork of the upstream `evmd` example app. It depends on a
-pinned checkout of `cosmos/evm` **v0.7.0** (`f4ab9a3…`) via a `go.mod` replace
-pointing at `~/Documents/Project/celar-build/cosmos-evm` — update that path if
-the clone moves, or switch to the `v0.7.0` tag for a portable build.
+`chain/celard` is Celar's node — a fork of the Cosmos EVM reference app (`evmd`)
+that wires the `precisebank` module so the native token **CELAR** runs at
+**9 decimals** on-chain while presenting the EVM/MetaMask-standard 18 decimals.
+It builds **portably** against `cosmos/evm` **v0.7.0** (pinned in `go.mod`,
+fetched from GitHub — no local checkout required).
 
-Native-token denominations:
+### Denominations
 
 | Role | Denom | Decimals | Where |
 |------|-------|----------|-------|
@@ -37,35 +38,53 @@ Native-token denominations:
 | Extended denom (EVM / MetaMask)   | `acelar` | 18 | via `precisebank` |
 | Display                            | `CELAR` | — | metadata |
 
-The 9↔18 reconciliation is handled by `precisebank` (conversion factor `10^9`),
-whose keeper is handed to the EVM-side consumers in place of the base bank
-keeper; Cosmos-native modules (staking, distribution, gov, mint) keep base bank.
+1 CELAR = 10⁹ ncelar = 10¹⁸ acelar. The 9↔18 reconciliation is handled by
+`precisebank` (conversion factor `10^9`), whose keeper is handed to the EVM-side
+consumers in place of the base bank keeper; Cosmos-native modules (staking,
+distribution, gov, mint) keep base bank.
 
-### Prerequisites
-- Go ≥ 1.25.9
-- the pinned `cosmos/evm` clone at the path in `chain/celard/go.mod`
-- `jq`
+### Quick start
 
-### Build
+Prerequisites: **Go ≥ 1.25.9** and **jq**.
+
 ```bash
-cd chain/celard
-go build -o "$(go env GOPATH)/bin/celard" ./cmd/evmd
+cd chain
+./bootstrap.sh          # builds celard, generates a solo devnet, and starts it
 ```
 
-### Devnet genesis
-`chain/devnet/patch-genesis.sh` rewrites a stock `celard` genesis into the 9-dec
-`ncelar`/`acelar`/`CELAR` config (unifies all denoms to `ncelar`, sets the
-extended denom to `acelar`, writes the bank `denom_metadata`, and keeps the
-ICS20 precompile disabled). Apply it to a generated genesis:
-```bash
-celard init <moniker> --chain-id celar-devnet-1 --home <home>
-chain/devnet/patch-genesis.sh <home>/config/genesis.json
-celard genesis validate --home <home>
-```
-The full 3-node flow (init ×3 → patch → genesis accounts → `gentx` →
-`collect-gentxs` → peers → `start`) is documented in the build notes under
-`../doc/`.
+Or step by step:
 
-> Note: `celard` still carries the upstream internal name `evmd` and default home
-> `~/.evmd` — cosmetic leftovers from the fork, to be rebranded later. Always
-> pass an explicit `--home`.
+```bash
+# build
+cd chain/celard && go build -o "$(go env GOPATH)/bin/celard" ./cmd/evmd
+
+# generate a devnet (default 3 validators; N=1 for a single-validator solo net)
+N=1 chain/devnet/make-devnet.sh ~/celar-solo
+
+# start node0 (prints height + eth_chainId; logs to <home>/node.log)
+chain/devnet/run-node.sh ~/celar-solo/node0
+```
+
+`make-devnet.sh` also accepts `EVM_CHAIN_ID=<n>` (default `23529`). Stop the node
+with `pkill -f "celard start"`.
+
+### Verify it's alive
+
+```bash
+curl -s http://127.0.0.1:26657/status | jq '.result.sync_info.latest_block_height'   # climbing
+V=$(celard keys show val0 -a --keyring-backend test --home ~/celar-solo/node0)
+celard query bank balances "$V" --home ~/celar-solo/node0                             # 9-dec ncelar
+curl -s -X POST http://127.0.0.1:8545 -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}'               # 0x5be9 = 23529
+```
+
+### Add to MetaMask
+
+- Network name: Celar Devnet
+- RPC URL: `http://127.0.0.1:8545`
+- Chain ID: `23529`
+- Currency symbol: `CELAR`
+
+The same seed works in both MetaMask (`0x…`) and the `celard` keyring (`celar1…`)
+— `celard` uses eth_secp256k1 keys / BIP-44 coin type 60, so it's one account,
+two address encodings, one balance.
