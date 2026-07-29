@@ -20,6 +20,6 @@ jq --arg base "$BASE" --arg ext "$EXT" --arg disp "$DISP" '
       base:$base, display:$disp, name:"Celar", symbol:$disp
     }]
   # 4) keep ICS20 precompile disabled (G7): active_static_precompiles stays empty
-  | .app_state.evm.params.active_static_precompiles = []
+  | .app_state.evm.params.active_static_precompiles = ["0x0000000000000000000000000000000000000900"]
 ' "$GENESIS" > "$tmp" && mv "$tmp" "$GENESIS"
 echo "patched $GENESIS -> base=$BASE ext=$EXT display=$DISP"

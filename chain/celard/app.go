@@ -21,12 +21,13 @@ import (
 	dbm "github.com/cosmos/cosmos-db"
 	evmante "github.com/cosmos/evm/ante"
 	antetypes "github.com/cosmos/evm/ante/types"
-	precisebank "github.com/cosmos/evm/evmd/precisebank"
-	precisebankkeeper "github.com/cosmos/evm/evmd/precisebank/keeper"
-	precisebanktypes "github.com/cosmos/evm/evmd/precisebank/types"
 	evmencoding "github.com/cosmos/evm/encoding"
 	evmaddress "github.com/cosmos/evm/encoding/address"
 	evmconfig "github.com/cosmos/evm/evmd/config"
+	precisebank "github.com/cosmos/evm/evmd/precisebank"
+	precisebankkeeper "github.com/cosmos/evm/evmd/precisebank/keeper"
+	precisebanktypes "github.com/cosmos/evm/evmd/precisebank/types"
+	celarfhe "github.com/cosmos/evm/evmd/precompiles/fhe"
 	evmmempool "github.com/cosmos/evm/mempool"
 	precompiletypes "github.com/cosmos/evm/precompiles/types"
 	cosmosevmserver "github.com/cosmos/evm/server"
@@ -487,20 +488,26 @@ func NewExampleApp(
 		&app.Erc20Keeper,
 		evmChainID,
 		tracer,
-	).WithStaticPrecompiles(
-		precompiletypes.DefaultStaticPrecompiles(
-			*app.StakingKeeper,
-			app.DistrKeeper,
-			app.PreciseBankKeeper,
-			&app.Erc20Keeper,
-			app.TransferKeeper,
-			app.IBCKeeper.ChannelKeeper,
-			app.IBCKeeper.ClientKeeper,
-			app.GovKeeper,
-			app.SlashingKeeper,
-			appCodec,
-		),
 	)
+
+	staticPrecompiles := precompiletypes.DefaultStaticPrecompiles(
+		*app.StakingKeeper,
+		app.DistrKeeper,
+		app.PreciseBankKeeper,
+		&app.Erc20Keeper,
+		app.TransferKeeper,
+		app.IBCKeeper.ChannelKeeper,
+		app.IBCKeeper.ClientKeeper,
+		app.GovKeeper,
+		app.SlashingKeeper,
+		appCodec,
+	)
+	celarFHE, fheErr := celarfhe.NewPrecompile()
+	if fheErr != nil {
+		panic(fmt.Sprintf("failed to create celar fhe precompile: %s", fheErr))
+	}
+	staticPrecompiles[common.HexToAddress(celarfhe.CelarFHEPrecompileAddress)] = celarFHE
+	app.EVMKeeper = app.EVMKeeper.WithStaticPrecompiles(staticPrecompiles)
 
 	// enable virtual fee collection
 	// app.EVMKeeper.EnableVirtualFeeCollection() // disabled: unsupported for 9-dec display (panics in DeductFees)
