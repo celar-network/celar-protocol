@@ -86,3 +86,47 @@ func (p Precompile) registerHandle(
 		db.SetState(p.ContractAddress, MetaSlot(h), packMeta(owner, ktype))
 	}
 }
+
+// Permission bits stored in acl[h][grantee] (low-order byte of the word).
+const (
+	permBitCompute         byte = 0x01
+	permBitReencryptToSelf byte = 0x02
+	permBitReveal          byte = 0x04
+)
+
+// permBit maps an ABI perm value (0/1/2) to its storage bit.
+func permBit(perm uint8) (byte, bool) {
+	switch perm {
+	case PermCompute:
+		return permBitCompute, true
+	case PermReencryptToSelf:
+		return permBitReencryptToSelf, true
+	case PermReveal:
+		return permBitReveal, true
+	}
+	return 0, false
+}
+
+// grantPerm ORs a permission bit into acl[h][grantee]. Additive only —
+// revocation is not in the frozen ABI.
+func (p Precompile) grantPerm(
+	db vm.StateDB,
+	h common.Hash,
+	grantee common.Address,
+	bit byte,
+) {
+	slot := aclSlot(h, grantee)
+	word := db.GetState(p.ContractAddress, slot)
+	word[31] |= bit
+	db.SetState(p.ContractAddress, slot, word)
+}
+
+// hasPerm reports whether acl[h][addr] carries the given permission bit.
+func (p Precompile) hasPerm(
+	db vm.StateDB,
+	h common.Hash,
+	addr common.Address,
+	bit byte,
+) bool {
+	return db.GetState(p.ContractAddress, aclSlot(h, addr))[31]&bit != 0
+}

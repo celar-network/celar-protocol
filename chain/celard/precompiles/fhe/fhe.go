@@ -112,7 +112,14 @@ func (p Precompile) Run(
 		return method.Outputs.Pack(h)
 
 	// ---- stateful: ACL + KMS gateway (G5 journaled path) ------------------
-	case AllowMethod, RequestReencryptMethod, RequestRevealMethod:
+	case AllowMethod:
+		if readonly {
+			return nil, vm.ErrWriteProtection
+		}
+		return p.runAllow(evm.StateDB, contract.Caller(), method, argBz)
+
+	// ---- stateful : KMS gateway (journaled native-action path) ------------
+	case RequestReencryptMethod, RequestRevealMethod:
 		if readonly {
 			return nil, vm.ErrWriteProtection
 		}
@@ -124,9 +131,6 @@ func (p Precompile) Run(
 					sdk.NewAttribute("input",
 						common.Bytes2Hex(crypto.Keccak256(argBz))),
 				))
-				if method.Name == AllowMethod {
-					return nil, nil // allow returns void
-				}
 				return p.packHandle(method, argBz)
 			})
 	}
@@ -200,4 +204,54 @@ func (p Precompile) operandKType(
 		return KTypeUnknown
 	}
 	return metaKType(meta)
+}
+
+// runAllow enforces the owner-only write rule and records the grant:
+// only the account that created h(per the handle registry) may add ACL
+// entries for it. Grants are additive perm bits in ach[h][grantee].
+func (p Precompile) runAllow(
+	db vm.StateDB,
+	caller common.Address,
+	method *abi.Method,
+	argBz []byte,
+) ([]byte, error) {
+	args, err := method.Inputs.Unpack(argBz)
+	if err != nil {
+		return nil, err
+	}
+	hb, ok := args[0].([32]byte)
+	if !ok {
+		return nil, errors.New("fhe preompile:allow: bad handle arg")
+	}
+	var grantee common.Address
+	switch v := args[1].(type) {
+	case common.Address:
+		grantee = v
+	case [20]byte:
+		grantee = common.Address(v)
+	default:
+		return nil, fmt.Errorf("fhe precompile: allow: bad account arg (%T)", args[1])
+	}
+	var perm (uint8)
+	switch v := args[2].(type) {
+	case uint8:
+		perm = v
+	default:
+		return nil, fmt.Errorf("fhe precompile: allow: bad perm arg (%T)", args[2])
+	}
+
+	h := common.Hash(hb)
+	meta := p.getMeta(db, h)
+	if !metaExist(meta) {
+		return nil, errors.New("fhe precompile: allow: unknown handle")
+	}
+	if metaOwner(meta) != caller {
+		return nil, errors.New("fhe precompile: allow: caller is not the handle owner")
+	}
+	bit, ok := permBit(perm)
+	if !ok {
+		return nil, fmt.Errorf("fhe precompile: allow: unknown per %d", perm)
+	}
+	p.grantPerm(db, h, grantee, bit)
+	return nil, nil //void return
 }
