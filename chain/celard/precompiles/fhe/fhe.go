@@ -118,10 +118,14 @@ func (p Precompile) Run(
 		}
 		return p.runAllow(evm.StateDB, contract.Caller(), method, argBz)
 
-	// ---- stateful : KMS gateway (journaled native-action path) ------------
+	// ---- stateful : KMS gateway (ACL-guarded, journaled) ------------
 	case RequestReencryptMethod, RequestRevealMethod:
 		if readonly {
 			return nil, vm.ErrWriteProtection
+		}
+		if err := p.checkServable(evm.StateDB, contract.Caller(),
+			method.Name, argBz); err != nil {
+			return nil, err
 		}
 		return p.RunNativeAction(evm, contract,
 			func(ctx sdk.Context) ([]byte, error) {
@@ -254,4 +258,39 @@ func (p Precompile) runAllow(
 	}
 	p.grantPerm(db, h, grantee, bit)
 	return nil, nil //void return
+}
+
+// checkServable mirrors the KMS servability predicate at request time:
+// re-encryption is servable for the handle's owner or a holder of the
+// reencrypt-to-self grant; reveal only for a holder of the reveal grant
+// (explicit per-handle, no wildcards). The handle is the first static
+// argument of both request methods.
+func (p Precompile) checkServable(
+	db vm.StateDB,
+	caller common.Address,
+	methodName string,
+	argBz []byte,
+) error {
+	if len(argBz) < 32 {
+		return errors.New("fhe precompile: request: missing handle arg")
+	}
+	h := common.BytesToHash((argBz[:32]))
+	meta := p.getMeta(db, h)
+	if !metaExist(meta) {
+		return errors.New("fhe precompile: request: unknown handle")
+	}
+	switch methodName {
+	case RequestReencryptMethod:
+		if metaOwner(meta) == caller ||
+			p.hasPerm(db, h, caller, permBitReencryptToSelf) {
+			return nil
+		}
+		return errors.New("fhe precompile: reencrypt not authorised for caller")
+	case RequestRevealMethod:
+		if p.hasPerm(db, h, caller, permBitReveal) {
+			return nil
+		}
+		return errors.New("fhe precompile: reveal not granted for this handle")
+	}
+	return nil
 }
