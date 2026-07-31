@@ -99,11 +99,17 @@ func (p Precompile) Run(
 		if len(proof) == 0 {
 			return nil, errors.New("fhe precompile: empty proof rejected")
 		}
-		return p.packHandle(method, argBz)
+		h := p.deriveHandle(method, argBz)
+		p.registerHandle(evm.StateDB, h, contract.Caller(),
+			KTypeUnknown, readonly)
+		return method.Outputs.Pack(h)
 
 	case TrivialEncryptMethod, AddMethod, SubMethod, LeMethod, LtMethod,
 		EqMethod, AndMethod, OrMethod, NotMethod, SelectMethod, CastMethod:
-		return p.packHandle(method, argBz)
+		h := p.deriveHandle(method, argBz)
+		p.registerHandle(evm.StateDB, h, contract.Caller(),
+			p.resultKType(evm.StateDB, method, argBz), readonly)
+		return method.Outputs.Pack(h)
 
 	// ---- stateful: ACL + KMS gateway (G5 journaled path) ------------------
 	case AllowMethod, RequestReencryptMethod, RequestRevealMethod:
@@ -127,18 +133,71 @@ func (p Precompile) Run(
 	return nil, fmt.Errorf("fhe precompile: unhandled method %s", method.Name)
 }
 
-// packHandle derives the deterministic stub handle for a call and ABI-packs
-// it as the single bytes32 output:
+// deriveHandle computes the deterministic stub handle for a call:
 //
 //	handle = keccak256(domainTag || methodName || rawArgs)
-func (p Precompile) packHandle(
+func (p Precompile) deriveHandle(
 	method *abi.Method,
 	argBz []byte,
-) ([]byte, error) {
+) common.Hash {
 	preimage := make([]byte, 0, len(domainTag)+len(method.Name)+len(argBz))
 	preimage = append(preimage, []byte(domainTag)...)
 	preimage = append(preimage, []byte(method.Name)...)
 	preimage = append(preimage, argBz...)
-	handle := crypto.Keccak256Hash(preimage)
-	return method.Outputs.Pack(handle)
+	return crypto.Keccak256Hash(preimage)
+}
+
+// packHandle derives the stub handle and ABI-Packs it as the single
+// byte32 output.
+func (p Precompile) packHandle(
+	method *abi.Method,
+	argBz []byte,
+) ([]byte, error) {
+	return method.Outputs.Pack(p.deriveHandle(method, argBz))
+}
+
+// resultType decides the plaintext type tag of a compute result:
+// comparisons/booleans are ebool: tivicalEncrypt/cast carry an explicit k
+// argument: add/sub/select inherit the first operand handle's registered
+// type (unknown if the operand was never registered)
+func (p Precompile) resultKType(
+	db vm.StateDB,
+	method *abi.Method,
+	argBz []byte,
+) uint8 {
+	switch method.Name {
+	case LeMethod, LtMethod, EqMethod, AndMethod, OrMethod, NotMethod:
+		return KTypeEbool
+	case TrivialEncryptMethod, CastMethod:
+		args, err := method.Inputs.Unpack(argBz)
+		if err != nil {
+			return KTypeUnknown
+		}
+		if k, ok := args[len(args)-1].(uint8); ok {
+			return k
+		}
+		return KTypeUnknown
+	case AddMethod, SubMethod:
+		return p.operandKType(db, argBz, 0)
+	case SelectMethod:
+		return p.operandKType(db, argBz, 0)
+	}
+	return KTypeUnknown
+}
+
+// operandKType reads the registered type of the idx-th bytes32 argument.
+func (p Precompile) operandKType(
+	db vm.StateDB,
+	argBz []byte,
+	idx int,
+) uint8 {
+	off := idx * 32
+	if len(argBz) < off+32 {
+		return KTypeUnknown
+	}
+	meta := p.getMeta(db, common.BytesToHash(argBz[off:off+32]))
+	if !metaExist(meta) {
+		return KTypeUnknown
+	}
+	return metaKType(meta)
 }
