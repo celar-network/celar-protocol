@@ -50,3 +50,35 @@ Grouped by the three planes they touch. Every op is deterministic w.r.t. its inp
 5. **No hidden plaintext path:** the adapter never materializes a decryptable whole outside the threshold KMS.
 
 Adapters live beside this file: `adapter.py` defines the Python-side interface the harness drives; production adapters wrap TFHE-rs (Rust) / OpenFHE (C++) behind it.
+
+### Backend surface — the mapping, and what is deliberately absent
+
+This document specifies the **precompile** surface (what Solidity may call).
+`adapter.py` specifies the **backend** surface (what an FHE library must
+provide). They overlap but are not identical:
+
+| ABI op | Backend method | Note |
+|---|---|---|
+| `verifyInput` | `verify_input(ciphertext, proof)` | backend verifies the proof and admits the ciphertext |
+| `trivialEncrypt` | `trivial_encrypt(value, k)` | |
+| `add`, `sub` | `add`, `sub` | |
+| `le`, `lt`, `eq` | `le`, `lt`, `eq` | |
+| `and`, `or`, `not` | `and_`, `or_`, `not_` | trailing underscore: Python keywords |
+| `select` | `select` | |
+| `cast` | `cast` | |
+| `allow` | — | **chain-side only** (see below) |
+| `requestReencrypt` | `threshold_reencrypt(h, t, user_pubkey)` | the request is chain-side; the backend performs the threshold crypto |
+| `requestReveal` | `threshold_decrypt(h, t)` | as above |
+
+**Why `allow` has no backend method.** It writes the ACL, which is consensus
+state in the precompile's own EVM storage — the authorization root the KMS
+honors and the evidence base for the fraud proof. It is a state write, not a
+cryptographic operation: no TFHE-rs or OpenFHE primitive corresponds to it, so
+requiring it of every backend would mandate a method none can meaningfully
+implement. Authorization is enforced on chain, where it is provable; a second
+copy inside a backend could only be redundant or wrong.
+
+**Harness-only methods.** `pbs_op` (a PBS-bearing operation used as a
+performance probe) and `_oracle` (test-only plaintext shadow for correctness
+comparison) are instruments of the bake-off harness, not ABI ops; no on-chain
+surface exposes them.
