@@ -169,7 +169,7 @@ func (p Precompile) packHandle(
 // argument: add/sub/select inherit the first operand handle's registered
 // type (unknown if the operand was never registered)
 func (p Precompile) resultKType(
-	db vm.StateDB,
+	db stateStore,
 	method *abi.Method,
 	argBz []byte,
 ) uint8 {
@@ -195,7 +195,7 @@ func (p Precompile) resultKType(
 
 // operandKType reads the registered type of the idx-th bytes32 argument.
 func (p Precompile) operandKType(
-	db vm.StateDB,
+	db stateStore,
 	argBz []byte,
 	idx int,
 ) uint8 {
@@ -204,7 +204,7 @@ func (p Precompile) operandKType(
 		return KTypeUnknown
 	}
 	meta := p.getMeta(db, common.BytesToHash(argBz[off:off+32]))
-	if !metaExist(meta) {
+	if !metaExists(meta) {
 		return KTypeUnknown
 	}
 	return metaKType(meta)
@@ -214,7 +214,7 @@ func (p Precompile) operandKType(
 // only the account that created h(per the handle registry) may add ACL
 // entries for it. Grants are additive perm bits in ach[h][grantee].
 func (p Precompile) runAllow(
-	db vm.StateDB,
+	db stateStore,
 	caller common.Address,
 	method *abi.Method,
 	argBz []byte,
@@ -246,7 +246,7 @@ func (p Precompile) runAllow(
 
 	h := common.Hash(hb)
 	meta := p.getMeta(db, h)
-	if !metaExist(meta) {
+	if !metaExists(meta) {
 		return nil, errors.New("fhe precompile: allow: unknown handle")
 	}
 	if metaOwner(meta) != caller {
@@ -254,7 +254,7 @@ func (p Precompile) runAllow(
 	}
 	bit, ok := permBit(perm)
 	if !ok {
-		return nil, fmt.Errorf("fhe precompile: allow: unknown per %d", perm)
+		return nil, fmt.Errorf("fhe precompile: allow: unknown perm %d", perm)
 	}
 	p.grantPerm(db, h, grantee, bit)
 	return nil, nil //void return
@@ -266,7 +266,7 @@ func (p Precompile) runAllow(
 // (explicit per-handle, no wildcards). The handle is the first static
 // argument of both request methods.
 func (p Precompile) checkServable(
-	db vm.StateDB,
+	db stateStore,
 	caller common.Address,
 	methodName string,
 	argBz []byte,
@@ -276,7 +276,7 @@ func (p Precompile) checkServable(
 	}
 	h := common.BytesToHash((argBz[:32]))
 	meta := p.getMeta(db, h)
-	if !metaExist(meta) {
+	if !metaExists(meta) {
 		return errors.New("fhe precompile: request: unknown handle")
 	}
 	switch methodName {
@@ -285,7 +285,7 @@ func (p Precompile) checkServable(
 			p.hasPerm(db, h, caller, permBitReencryptToSelf) {
 			return nil
 		}
-		return errors.New("fhe precompile: reencrypt not authorised for caller")
+		return errors.New("fhe precompile: reencrypt not authorized for caller")
 	case RequestRevealMethod:
 		if p.hasPerm(db, h, caller, permBitReveal) {
 			return nil

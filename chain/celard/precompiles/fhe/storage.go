@@ -2,9 +2,15 @@ package fhe
 
 import (
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 )
+
+// stateStore is the narrow slice of vm.StateDB the registry and ACL need.
+// The real EVM StateDB satisfies it; tests use a map-backed fake
+type stateStore interface {
+	GetState(common.Address, common.Hash) common.Hash
+	SetState(common.Address, common.Hash, common.Hash) common.Hash
+}
 
 // EVM storage layout of the precompile account -  see STORAGE-LAYOUT.md.
 // Solidity-compatible slots:
@@ -25,7 +31,7 @@ const (
 
 // metaSlot returns the lsot of handleMeta[h]:
 // keccah256(h || uint256(baseSlotHandleMeta)).
-func MetaSlot(h common.Hash) common.Hash {
+func metaSlot(h common.Hash) common.Hash {
 	var base common.Hash
 	base[31] = baseSlotHandleMeta
 	return crypto.Keccak256Hash(h.Bytes(), base.Bytes())
@@ -52,7 +58,7 @@ func packMeta(owner common.Address, ktype uint8) common.Hash {
 	return w
 }
 
-func metaExist(w common.Hash) bool { return w[21]&0x01 == 1 }
+func metaExists(w common.Hash) bool { return w[21]&0x01 == 1 }
 
 func metaOwner(w common.Hash) common.Address {
 	var a common.Address
@@ -63,8 +69,8 @@ func metaOwner(w common.Hash) common.Address {
 func metaKType(w common.Hash) uint8 { return w[20] }
 
 // getMeta read handleMeta[h] from the precompile's storage.
-func (p Precompile) getMeta(db vm.StateDB, h common.Hash) common.Hash {
-	return db.GetState(p.ContractAddress, MetaSlot(h))
+func (p Precompile) getMeta(db stateStore, h common.Hash) common.Hash {
+	return db.GetState(p.ContractAddress, metaSlot(h))
 }
 
 // registerHandle records (owner, ktype, exists) for a newly create handle.
@@ -73,7 +79,7 @@ func (p Precompile) getMeta(db vm.StateDB, h common.Hash) common.Hash {
 // transfer ownership. No-op in readonly (static-call) contexts: SetState
 // would bypass the EVM's own write protection there.
 func (p Precompile) registerHandle(
-	db vm.StateDB,
+	db stateStore,
 	h common.Hash,
 	owner common.Address,
 	ktype uint8,
@@ -82,9 +88,10 @@ func (p Precompile) registerHandle(
 	if readonly {
 		return
 	}
-	if metaExist(p.getMeta(db, h)) {
-		db.SetState(p.ContractAddress, MetaSlot(h), packMeta(owner, ktype))
+	if metaExists(p.getMeta(db, h)) {
+		return
 	}
+	db.SetState(p.ContractAddress, metaSlot(h), packMeta(owner, ktype))
 }
 
 // Permission bits stored in acl[h][grantee] (low-order byte of the word).
@@ -110,7 +117,7 @@ func permBit(perm uint8) (byte, bool) {
 // grantPerm ORs a permission bit into acl[h][grantee]. Additive only —
 // revocation is not in the frozen ABI.
 func (p Precompile) grantPerm(
-	db vm.StateDB,
+	db stateStore,
 	h common.Hash,
 	grantee common.Address,
 	bit byte,
@@ -123,7 +130,7 @@ func (p Precompile) grantPerm(
 
 // hasPerm reports whether acl[h][addr] carries the given permission bit.
 func (p Precompile) hasPerm(
-	db vm.StateDB,
+	db stateStore,
 	h common.Hash,
 	addr common.Address,
 	bit byte,
