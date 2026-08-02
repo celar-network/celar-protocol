@@ -48,7 +48,7 @@ class FHEBackend(ABC):
 
     # A. input admission
     @abstractmethod
-    def verify_input(self, plaintext: int, k: int, proof_ok: bool) -> Handle: ...
+    def verify_input(self, ciphertext: bytes, proof: bytes) -> Handle: ...
     @abstractmethod
     def trivial_encrypt(self, value: int, k: int) -> Handle: ...
 
@@ -80,7 +80,7 @@ class FHEBackend(ABC):
     @abstractmethod
     def threshold_decrypt(self, h: Handle, t: int) -> int: ...
     @abstractmethod
-    def threshold_reencrypt(self, h: Handle, t: int) -> bytes: ...
+    def threshold_reencrypt(self, h: Handle, t: int, user_pubkey: bytes) -> bytes: ...
 
     # test-only: reveal the modeled plaintext for oracle comparison
     @abstractmethod
@@ -117,13 +117,26 @@ class MockBackend(FHEBackend):
             license="internal",
             fto_status="n/a",
         )
+    
+    # Mock ciphertext encodingL value.to_bytes(8) || k. A real backend
+    # deserialises an actual ciphertext here; the shadow keeps the plaintext
+    # in the clear so the harness can compare against an oracle.
+    @staticmethod
+    def encode_input(value: int, k: int = 64) -> bytes:
+        return(value & MockBackend.MASK).to_bytes(8, "big") + bytes([k])
 
-    def verify_input(self, plaintext, k, proof_ok):
-        if not proof_ok:
+    def verify_input(self, ciphertext, proof):
+        if not proof:
             raise ValueError("input proof rejected (verifyInput)")
-        if not (0 <= plaintext < (1 << k)):
+        if len(ciphertext) != 9:
+            raise ValueError("malformed ciphertext")
+        value = int.from_bytes(ciphertext[:8], "big")
+        k = ciphertext[8]
+        if not(0 < k <= 64):
+            raise ValueError("bad width")
+        if not (0 <= value < (1 << k)):
             raise ValueError("range check failed")
-        return self._put(plaintext)
+        return self._put(value)
 
     def trivial_encrypt(self, value, k):
         return self._put(value)
@@ -145,8 +158,12 @@ class MockBackend(FHEBackend):
 
     def threshold_decrypt(self, h, t):
         return self._store[h]
-    def threshold_reencrypt(self, h, t):
-        return hashlib.sha256(str(self._store[h]).encode()).digest()
+    def threshold_reencrypt(self, h, t, user_pubkey):
+        if not user_pubkey:
+            raise ValueError("re-encryption needs a recipient public key")
+        # Shadow if  "re-encrypt toward this key": the result must be bound to
+        # the receipt, so a partial for one key is useless for another.
+        return hashlib.sha256(str(self._store[h]).encode() + user_pubkey).digest()
 
     def _oracle(self, h):
         return self._store[h]

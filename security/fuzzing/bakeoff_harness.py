@@ -79,13 +79,18 @@ def run_transfer_e2e(be):
 
 
 def input_proof_rejects(be) -> bool:
-    """§3.1 — a bad proof must be rejected."""
+    """§3.1 — a bad proof must be rejected. a good one admitted"""
+    ct = be.encode_input(5,64)
     try:
-        be.verify_input(5, 64, proof_ok=False)
+        be.verify_input(ct, b"")        # empty proof must be refused
         return False
     except Exception:
+        pass
+    try:
+        be.verify_input(ct,b"\x01")     # valid proof must be admitted
         return True
-
+    except Exception:
+        return False
 
 def report(name, be):
     caps = be.caps()
