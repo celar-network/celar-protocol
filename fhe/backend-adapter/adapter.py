@@ -60,6 +60,18 @@ class FHEBackend(ABC):
     @abstractmethod
     def le(self, a: Handle, b: Handle) -> Handle: ...        # -> ebool handle
     @abstractmethod
+    def lt(self, a: Handle, b: Handle) -> Handle: ...        # -> ebool handle
+    @abstractmethod
+    def eq(self, a: Handle, b: Handle) -> Handle: ...        # -> ebool handle
+    @abstractmethod
+    def and_(self, a: Handle, b: Handle) -> Handle: ...      # ebool AND ebool
+    @abstractmethod
+    def or_(self, a: Handle, b: Handle) -> Handle: ...       # ebool OR ebool
+    @abstractmethod
+    def not_(self, a: Handle) -> Handle: ...                 # NOT ebool
+    @abstractmethod
+    def cast(self, a: Handle, k: int) -> Handle: ...         # euint width change
+    @abstractmethod
     def select(self, cond: Handle, a: Handle, b: Handle) -> Handle: ...
     @abstractmethod
     def pbs_op(self, a: Handle) -> Handle: ...               # a PBS-bearing op
@@ -119,6 +131,12 @@ class MockBackend(FHEBackend):
     def add(self, a, b):   return self._put(self._store[a] + self._store[b])
     def sub(self, a, b):   return self._put(self._store[a] - self._store[b])
     def le(self, a, b):    return self._put(1 if self._store[a] <= self._store[b] else 0)
+    def lt(self, a, b):    return self._put(1 if self._store[a] < self._store[b] else 0)
+    def eq(self, a, b):    return self._put(1 if self._store[a] == self._store[b] else 0)
+    def and_(self, a, b):  return self._put(1 if (self._store[a] and self._store[b]) else 0)
+    def or_(self, a, b):   return self._put(1 if (self._store[a] or self._store[b]) else 0)
+    def not_(self, a):     return self._put(0 if self._store[a] else 1)
+    def cast(self, a, k):  return self._put(self._store[a] & ((1 << k) - 1))
     def select(self, cond, a, b):
         return self._put(self._store[a] if self._store[cond] else self._store[b])
     def pbs_op(self, a):
