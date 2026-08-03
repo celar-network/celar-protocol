@@ -1,20 +1,17 @@
-# A1 — Zama TFHE-rs adapter (Rust core + PyO3 binding so the Python harness drives it)
-# Verify versions against https://docs.rs/tfhe before building.
+# Celar FHE backend — Zama TFHE-rs implementation of the frozen ABI (ABI.md).
+#
+# Build notes:
+#   CPU determinism runs (the fraud-game ground truth) must be built WITHOUT
+#   the gpu feature and on a pinned toolchain. GPU throughput runs add the
+#   "gpu" feature and build on the accelerator node.
 [package]
 name = "celar_zama"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 [lib]
 name = "celar_zama"
-crate-type = ["cdylib"]   # produces a Python-importable .so
 
 [dependencies]
-# TFHE-rs. Enable the GPU feature for the H100 runs; drop it for the CPU-reference/determinism runs.
-tfhe = { version = "0.8", features = ["integer", "boolean"] }   # add "gpu" for CUDA
-pyo3 = { version = "0.22", features = ["extension-module"] }
-
-# For the CPU determinism run (§3.2), build WITHOUT the gpu feature and pin the toolchain:
-#   rustup override set 1.79.0   (pin)
-#   cargo build --release
-# For the GPU throughput run, add "gpu" to tfhe features and build on the H100 node.
+tfhe = { version = "1.7.0", features = ["integer"] }

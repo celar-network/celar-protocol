@@ -33,3 +33,6 @@ __pycache__/
 .vscode/
 .idea/
 *.swp
+
+# Rust build artifacts
+target/
