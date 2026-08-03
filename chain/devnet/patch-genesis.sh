@@ -19,7 +19,11 @@ jq --arg base "$BASE" --arg ext "$EXT" --arg disp "$DISP" '
       ],
       base:$base, display:$disp, name:"Celar", symbol:$disp
     }]
-  # 4) keep ICS20 precompile disabled (G7): active_static_precompiles stays empty
+  # 4) only the Celar FHE precompile is active; the ICS20 precompile stays out
   | .app_state.evm.params.active_static_precompiles = ["0x0000000000000000000000000000000000000900"]
+  # 5) IBC transfer (ICS20) disabled: Celar bridges via its own light-client
+  #    design, and the ICS20 precompile is the component behind ASA-2026-002.
+  | .app_state.transfer.params.send_enabled = false
+  | .app_state.transfer.params.receive_enabled = false
 ' "$GENESIS" > "$tmp" && mv "$tmp" "$GENESIS"
 echo "patched $GENESIS -> base=$BASE ext=$EXT display=$DISP"
