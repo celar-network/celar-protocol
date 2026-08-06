@@ -29,6 +29,8 @@ pub enum FheError {
     Badwidth(u8),
     RangeCheckFailed,
     ProofRejected,
+    MalformedCiphertext,
+    MissingRecipientKey,
 }
 
 pub type Res<T> = Result<T, FheError>;
@@ -187,3 +189,71 @@ impl Backend {
         Ok(self.boolean(h)?.decrypt(ck))
     }
 } 
+// ---------------------------------------------------------------------------
+// Input admission and the KMS-facing paths.
+//
+// Two boundaries are deliberately stubbed here and owned by other tracks:
+// input-proof verification (the admission gate) and threshold decryption /
+// re-encryption (the committee). What belongs to this crate is the backend
+// half: deserialising real ciphertext material and performing the underlying
+// crypto. The stand-ins below are single-key and are never a production path.
+// ---------------------------------------------------------------------------
+
+impl Backend {
+    /// Serialise a stored ciphertext. Clients use this shape to submit
+    /// inputs; tests use it to round-trip through `verify_input`.
+    pub fn serialize_handle(&self, h: Handle) -> Res<Vec<u8>> {
+        let (ct, _) = self.uint(h)?;
+        bincode::serialize(ct).map_err(|_| FheError::MalformedCiphertext)
+    }
+
+    /// Admit a client-supplied ciphertext.
+    ///
+    /// The proof check is a placeholder: a real input proof establishes
+    /// well-formedness, range, and knowledge of the plaintext, and is the
+    /// gate that keeps malformed ciphertext out of consensus state. Until
+    /// that lands, an empty proof is refused and anything else accepted,
+    /// which is enough to exercise the admission path without pretending to
+    /// verify anything.
+    pub fn verify_input(&mut self, ciphertext: &[u8], proof: &[u8]) -> Res<Handle> {
+        if proof.is_empty() {
+            return Err(FheError::ProofRejected);
+        }
+        let ct: FheUint64 = bincode::deserialize(ciphertext)
+            .map_err(|_| FheError::MalformedCiphertext)?;
+        Ok(self.put(Ct::Uint { ct, width: 64 }))
+    }
+
+    /// Stand-in for threshold decryption. The committee threshold is
+    /// accepted and recorded but not enforced: real decryption combines
+    /// partials from a quorum and never reconstructs a single key.
+    pub fn threshold_decrypt(&self, h: Handle, _t: u32, ck: &ClientKey) -> Res<u64> {
+        let (ct, _) = self.uint(h)?;
+        Ok(ct.decrypt(ck))
+    }
+
+    /// Stand-in for threshold re-encryption toward a recipient's key.
+    ///
+    /// The output is bound to the recipient, which is the property that
+    /// matters: material produced for one recipient must be useless to
+    /// another. Real re-encryption produces partials that the recipient
+    /// combines client-side; the plaintext exists only on their device.
+    pub fn threshold_reencrypt(
+        &self,
+        h: Handle,
+        _t: u32,
+        user_pubkey: &[u8],
+        ck: &ClientKey,
+    ) -> Res<Vec<u8>> {
+        if user_pubkey.is_empty() {
+            return Err(FheError::MissingRecipientKey);
+        }
+        let (ct, _) = self.uint(h)?;
+        let value: u64 = ct.decrypt(ck);
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(value.to_be_bytes());
+        hasher.update(user_pubkey);
+        Ok(hasher.finalize().to_vec())
+    }
+}
