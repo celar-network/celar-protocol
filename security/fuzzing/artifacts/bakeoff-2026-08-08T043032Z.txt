@@ -43,17 +43,17 @@ BAKE-OFF REPORT — backend: zama  (ZamaBackend (TFHE-rs 1.7, default params))
   CPU-path bit-reproducible        : False   FAIL — cannot define fraud game
   GPU available (may diverge, OK)  : False
 Traceback (most recent call last):
-  File "/home/onslow/Documents/Project/celar/celar-protocol/security/fuzzing/bakeoff_harness.py", line 162, in <module>
+  File "<repo>/security/fuzzing/bakeoff_harness.py", line 162, in <module>
     main()
-  File "/home/onslow/Documents/Project/celar/celar-protocol/security/fuzzing/bakeoff_harness.py", line 154, in main
+  File "<repo>/security/fuzzing/bakeoff_harness.py", line 154, in main
     report(name, be)
-  File "/home/onslow/Documents/Project/celar/celar-protocol/security/fuzzing/bakeoff_harness.py", line 121, in report
+  File "<repo>/security/fuzzing/bakeoff_harness.py", line 121, in report
     t_sel   = timed(be.select, be.trivial_encrypt(1,64), be.trivial_encrypt(3,64), be.trivial_encrypt(4,64))
               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/onslow/Documents/Project/celar/celar-protocol/security/fuzzing/bakeoff_harness.py", line 35, in timed
+  File "<repo>/security/fuzzing/bakeoff_harness.py", line 35, in timed
     fn(*a)  # warm
     ^^^^^^
-  File "/home/onslow/Documents/Project/celar/celar-protocol/security/fuzzing/../../fhe/backend-adapter/adapter.py", line 218, in select
+  File "<repo>/security/fuzzing/../../fhe/backend-adapter/adapter.py", line 218, in select
     def select(self, cond, a, b): return self._be.select(cond, a, b)
                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ValueError: ExpectedBool(489)
