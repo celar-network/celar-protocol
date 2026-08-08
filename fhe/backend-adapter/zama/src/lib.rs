@@ -1,6 +1,8 @@
 //! Celar FHE backend — Zama TFHE-rs implementation of the frozen ABI.
 
 pub mod backend;
+#[cfg(feature = "python")]
+pub mod python;
 
 use tfhe::{generate_keys, ClientKey, ConfigBuilder, ServerKey};
 

@@ -36,3 +36,6 @@ __pycache__/
 
 # Rust build artifacts
 target/
+
+# Python virtualenv for the FHE harness
+.venv/
