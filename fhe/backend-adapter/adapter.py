@@ -169,7 +169,77 @@ class MockBackend(FHEBackend):
         return self._store[h]
 
 
+class ZamaAdapter(FHEBackend):
+    """
+    Real backend: Zama TFHE-rs behind the frozen ABI, via the celar_zama
+    extension module. Every method delegates to Rust; nothing here models
+    anything.
+
+    Capabilities are declared as UNMEASURED where they are unmeasured. The
+    harness treats p_fail derivation, lambda_stat and CPU determinism as
+    disqualifiers, and this backend has not yet been characterised on any of
+    them: the parameter set is the TFHE-rs default with no derivation
+    reproduced here, and bit-identical output across independent CPU builds
+    has not been tested (vectorised FFT paths are a live question). Claiming
+    otherwise would repeat the mistake this adapter exists to correct.
+    """
+
+    def __init__(self):
+        import celar_zama
+        self._be = celar_zama.ZamaBackend()
+
+    def caps(self) -> BackendCaps:
+        return BackendCaps(
+            name="ZamaBackend (TFHE-rs 1.7, default params)",
+            p_fail_derivation="UNMEASURED — default parameter set, derivation not reproduced",
+            lambda_stat_supported=0,      # unmeasured, not zero-by-design
+            cpu_deterministic=False,      # unverified across independent builds
+            gpu_available=False,          # built without the gpu feature
+            license="BSD-3-Clause-Clear",
+            fto_status="open",            # patent position still outstanding
+        )
+
+    # input admission
+    def encode_input(self, value: int, k: int = 64) -> bytes:
+        return self._be.encode_input(value, k)
+
+    def verify_input(self, ciphertext, proof): return self._be.verify_input(ciphertext, proof)
+    def trivial_encrypt(self, value, k):      return self._be.trivial_encrypt(value, k)
+
+    # compute
+    def add(self, a, b):    return self._be.add(a, b)
+    def sub(self, a, b):    return self._be.sub(a, b)
+    def le(self, a, b):     return self._be.le(a, b)
+    def lt(self, a, b):     return self._be.lt(a, b)
+    def eq(self, a, b):     return self._be.eq(a, b)
+    def and_(self, a, b):   return self._be.and_(a, b)
+    def or_(self, a, b):    return self._be.or_(a, b)
+    def not_(self, a):      return self._be.not_(a)
+    def select(self, cond, a, b): return self._be.select(cond, a, b)
+    def cast(self, a, k):   return self._be.cast(a, k)
+    def pbs_op(self, a):    return self._be.pbs_op(a)
+
+    # committee-facing
+    def threshold_decrypt(self, h, t):
+        return self._be.threshold_decrypt(h, t)
+
+    def threshold_reencrypt(self, h, t, user_pubkey):
+        return self._be.threshold_reencrypt(h, t, user_pubkey)
+
+    def _oracle(self, h):
+        return self._be._oracle(h)
+
+
 # convenience: registry the harness reads
 def available_backends() -> dict[str, FHEBackend]:
-    """Real backends register here in Phase 1: e.g. 'zama': ZamaBackend()."""
-    return {"mock": MockBackend()}
+    """
+    Backends the harness will exercise. The real backend appears only if the
+    compiled extension module is importable, so the harness still runs on a
+    machine without the Rust toolchain.
+    """
+    backends: dict[str, FHEBackend] = {"mock": MockBackend()}
+    try:
+        backends["zama"] = ZamaAdapter()
+    except ImportError:
+        pass
+    return backends

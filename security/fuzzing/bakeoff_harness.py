@@ -72,7 +72,7 @@ def run_transfer_e2e(be):
         ok1 = be.le(a, bal_s)
         cap = be.sub(be.trivial_encrypt(MASK64, 64), bal_r)
         ok2 = be.le(a, cap)
-        ok = be.select(ok1, ok2, be.trivial_encrypt(0, 64))  # ok1 AND ok2 via select
+        ok = be.and_(ok1, ok2)
         m = be.select(ok, a, be.trivial_encrypt(0, 64))
         be.add(bal_r, m); be.sub(bal_s, m)
     return timed(one, reps=100)
@@ -118,7 +118,9 @@ def report(name, be):
     # 3.3 performance (WEIGHTED) — synthetic under mock, real under real adapters
     t_add   = timed(be.add,   be.trivial_encrypt(3,64), be.trivial_encrypt(4,64))
     t_le    = timed(be.le,    be.trivial_encrypt(3,64), be.trivial_encrypt(4,64))
-    t_sel   = timed(be.select, be.trivial_encrypt(1,64), be.trivial_encrypt(3,64), be.trivial_encrypt(4,64))
+    _lo, _hi = be.trivial_encrypt(3, 64), be.trivial_encrypt(4, 64)
+    _cond = be.le(_lo, _hi)          # select's condition is an ebool
+    t_sel   = timed(be.select, _cond, _lo, _hi)
     t_pbs   = timed(be.pbs_op, be.trivial_encrypt(9,64))
     t_xfer  = run_transfer_e2e(be)
     t_dec   = timed(be.threshold_decrypt, be.trivial_encrypt(9,64), T_QUORUM, reps=50)

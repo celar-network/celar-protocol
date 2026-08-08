@@ -1,0 +1,63 @@
+Celar M1 bake-off harness
+corpus: ['zero', 'max', 'boundary', 'mid', 'random']   committee t=79
+
+==========================================================================
+BAKE-OFF REPORT — backend: mock  (MockBackend)
+==========================================================================
+
+[3.1] Correctness & security (DISQUALIFIER)
+  functional correctness vs oracle : 40/40   PASS
+  bad-proof rejection              : PASS
+  p_fail derivation provided       : N/A (mock, no crypto)
+  lambda_stat supported (>=64)     : 64   PASS
+
+[3.2] Determinism (DISQUALIFIER for fraud model)
+  CPU-path bit-reproducible        : True   PASS
+  GPU available (may diverge, OK)  : False
+
+[3.3] Performance (WEIGHTED)  [mock timings are synthetic]
+  add            :   0.0002 ms
+  le (compare)   :   0.0002 ms
+  select         :   0.0002 ms
+  pbs-bearing op :   0.0002 ms
+  transfer e2e   :   0.0015 ms
+  thr-decrypt    :   0.0001 ms  (target online < 2000 ms, §7.3)
+
+[3.5] Legal & sustainability (WEIGHTED)
+  license   : internal
+  FTO status: n/a   
+
+  VERDICT: passes disqualifiers → proceeds to weighted scoring
+
+==========================================================================
+BAKE-OFF REPORT — backend: zama  (ZamaBackend (TFHE-rs 1.7, default params))
+==========================================================================
+
+[3.1] Correctness & security (DISQUALIFIER)
+  functional correctness vs oracle : 40/40   PASS
+  bad-proof rejection              : PASS
+  p_fail derivation provided       : UNMEASURED — default parameter set, derivation not reproduced
+  lambda_stat supported (>=64)     : 0   FAIL
+
+[3.2] Determinism (DISQUALIFIER for fraud model)
+  CPU-path bit-reproducible        : False   FAIL — cannot define fraud game
+  GPU available (may diverge, OK)  : False
+
+[3.3] Performance (WEIGHTED)  [mock timings are synthetic]
+  add            :   2.4607 ms
+  le (compare)   :   0.2062 ms
+  select         :   0.2727 ms
+  pbs-bearing op :   0.1948 ms
+  transfer e2e   :   5.9008 ms
+  thr-decrypt    :   0.0641 ms  (target online < 2000 ms, §7.3)
+
+[3.5] Legal & sustainability (WEIGHTED)
+  license   : BSD-3-Clause-Clear
+  FTO status: open   (gating if open)
+
+  VERDICT: ELIMINATED (lambda_stat, determinism)
+
+==========================================================================
+Framework OK. Phase-1: register real backends in adapter.available_backends()
+and re-run — identical harness emits real measured numbers.
+==========================================================================
