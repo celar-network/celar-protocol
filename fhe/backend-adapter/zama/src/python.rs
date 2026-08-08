@@ -80,11 +80,16 @@ impl ZamaBackend {
         Ok(self.inner.cast(a, k)?)
     }
 
-    /// A bootstrap-bearing operation, used as the performance probe. A
-    /// comparison is the honest choice: it is the operation every
-    /// confidential transfer depends on and the one that separates schemes.
+    /// A bootstrap-bearing operation, used as the performance probe.
+    ///
+    /// Comparison is the honest choice: every confidential transfer depends
+    /// on it, and it is what separates schemes. The operand must be compared
+    /// against a DISTINCT ciphertext — comparing a handle with itself is
+    /// short-circuited by the library and measures nothing (observed 380x
+    /// faster than a genuine comparison).
     fn pbs_op(&mut self, a: Handle) -> PyResult<Handle> {
-        Ok(self.inner.le(a, a)?)
+        let other = self.inner.trivial_encrypt(1, 64)?;
+        Ok(self.inner.le(a, other)?)
     }
 
     // ---- committee-facing ------------------------------------------------

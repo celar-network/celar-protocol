@@ -20,6 +20,12 @@ import adapter  # noqa: E402
 MASK64 = (1 << 64) - 1
 T_QUORUM = 79   # §7.7 permissionless committee threshold
 
+# Real FHE operations cost hundreds of milliseconds, so repetition counts are
+# small by necessity. Medians over few samples are noisy; treat them as
+# order-of-magnitude figures, not precise costs.
+BENCH_REPS = 5
+TRANSFER_REPS = 3
+
 # ---- shared test corpus (spec §2): zero, max, overflow boundary, mid, random ----
 CORPUS = [
     ("zero",       0,                  1),
@@ -30,7 +36,20 @@ CORPUS = [
 ]
 
 
-def timed(fn, *a, reps=200):
+def secret(be, value, k=64):
+    """
+    An operand that is genuinely encrypted, submitted the way a client would.
+
+    Trivial encryption is NOT usable here: it produces noiseless
+    public-value ciphertexts which the backend short-circuits (measured at
+    239x-1372x faster than real operands) and which carry no noise, so they
+    exercise neither real cost nor the noise budget. Reserve trivial
+    encryption for values that really are public.
+    """
+    return be.verify_input(be.encode_input(value, k), b"proof")
+
+
+def timed(fn, *a, reps=BENCH_REPS):
     """median ms over reps (warm)."""
     fn(*a)  # warm
     xs = []
@@ -46,8 +65,8 @@ def run_correctness(be) -> tuple[int, int]:
     passed = total = 0
     for name, a_pt, b_pt in CORPUS:
         for b_pt2 in (b_pt, (b_pt * 7 + 3) & MASK64):
-            ha = be.trivial_encrypt(a_pt, 64)
-            hb = be.trivial_encrypt(b_pt2, 64)
+            ha = secret(be, a_pt)
+            hb = secret(be, b_pt2)
             checks = {
                 "add": (be._oracle(be.add(ha, hb)), (a_pt + b_pt2) & MASK64),
                 "sub": (be._oracle(be.sub(ha, hb)), (a_pt - b_pt2) & MASK64),
@@ -66,16 +85,16 @@ def run_correctness(be) -> tuple[int, int]:
 def run_transfer_e2e(be):
     """§3.3 full §6 branchless transfer, timed."""
     def one():
-        a = be.trivial_encrypt(100, 64)
-        bal_s = be.trivial_encrypt(500, 64)
-        bal_r = be.trivial_encrypt(50, 64)
+        a = secret(be, 100)
+        bal_s = secret(be, 500)
+        bal_r = secret(be, 50)
         ok1 = be.le(a, bal_s)
         cap = be.sub(be.trivial_encrypt(MASK64, 64), bal_r)
         ok2 = be.le(a, cap)
         ok = be.and_(ok1, ok2)
         m = be.select(ok, a, be.trivial_encrypt(0, 64))
         be.add(bal_r, m); be.sub(bal_s, m)
-    return timed(one, reps=100)
+    return timed(one, reps=TRANSFER_REPS)
 
 
 def input_proof_rejects(be) -> bool:
@@ -116,21 +135,25 @@ def report(name, be):
     print(f"  GPU available (may diverge, OK)  : {caps.gpu_available}")
 
     # 3.3 performance (WEIGHTED) — synthetic under mock, real under real adapters
-    t_add   = timed(be.add,   be.trivial_encrypt(3,64), be.trivial_encrypt(4,64))
-    t_le    = timed(be.le,    be.trivial_encrypt(3,64), be.trivial_encrypt(4,64))
-    _lo, _hi = be.trivial_encrypt(3, 64), be.trivial_encrypt(4, 64)
-    _cond = be.le(_lo, _hi)          # select's condition is an ebool
-    t_sel   = timed(be.select, _cond, _lo, _hi)
-    t_pbs   = timed(be.pbs_op, be.trivial_encrypt(9,64))
+    s3, s4  = secret(be, 3), secret(be, 4)
+    t_add   = timed(be.add, s3, s4)
+    t_le    = timed(be.le,  s3, s4)
+    _cond   = be.le(s3, s4)          # select's condition is an ebool
+    t_sel   = timed(be.select, _cond, s3, s4)
+    t_pbs   = timed(be.pbs_op, secret(be, 9))
     t_xfer  = run_transfer_e2e(be)
-    t_dec   = timed(be.threshold_decrypt, be.trivial_encrypt(9,64), T_QUORUM, reps=50)
-    print("\n[3.3] Performance (WEIGHTED)  [mock timings are synthetic]")
+    t_dec   = timed(be.threshold_decrypt, secret(be, 9), T_QUORUM)
+    print(f"\n[3.3] Performance (WEIGHTED)  [real operands, "
+          f"n={BENCH_REPS}; mock timings are synthetic]")
     print(f"  add            : {t_add:8.4f} ms")
     print(f"  le (compare)   : {t_le:8.4f} ms")
     print(f"  select         : {t_sel:8.4f} ms")
     print(f"  pbs-bearing op : {t_pbs:8.4f} ms")
     print(f"  transfer e2e   : {t_xfer:8.4f} ms")
-    print(f"  thr-decrypt    : {t_dec:8.4f} ms  (target online < 2000 ms, §7.3)")
+    print(f"  local decrypt  : {t_dec:8.4f} ms  (single-key stand-in — NOT")
+    print("                              comparable to the §7.3 < 2000 ms")
+    print("                              threshold target: no committee, no")
+    print("                              partials, no network, no flooding)")
 
     # 3.5 legal
     print("\n[3.5] Legal & sustainability (WEIGHTED)")
