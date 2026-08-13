@@ -1,0 +1,69 @@
+# Celar CI
+#
+# Three suites, each guarding something that has already gone wrong once:
+#   go     — the precompile's registry/ACL, including the revert path, which
+#            has no upstream precedent and only regression tests to vouch for it
+#   rust   — the FHE operations against a plaintext oracle, and determinism
+#   python — the adapter against the frozen ABI, which drifted silently for
+#            months before anyone noticed
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  go:
+    name: chain (go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: chain/celard/go.sum
+      - name: build everything
+        working-directory: chain/celard
+        run: go build ./...
+      - name: test our packages
+        working-directory: chain/celard
+        # -tags=test is required: the upstream test config helpers are gated
+        # behind it and panic without it
+        run: go test -tags=test ./precompiles/... ./precisebank/...
+
+  rust:
+    name: fhe backend (rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fhe/backend-adapter/zama
+      - name: test
+        working-directory: fhe/backend-adapter/zama
+        # --release is not optional: FHE in debug is roughly 100x slower and
+        # would exceed any sensible CI budget.
+        #
+        # Determinism note: the fingerprint test prints hashes but does not
+        # assert them. Runner hardware differs from any developer machine, and
+        # cross-hardware reproducibility is a known open question — asserting
+        # the hashes here would produce failures that mean nothing.
+        run: cargo test --release
+
+  abi:
+    name: abi conformance (python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: adapter conforms to the frozen ABI
+        working-directory: fhe/backend-adapter
+        # Runs against the plaintext backend only; the compiled Rust module is
+        # optional and absent here, which the registry handles. The check reads
+        # ABI.md itself, so a divergence between the specification and the
+        # implementation fails loudly instead of accumulating.
+        run: python3 test_abi_conformance.py
