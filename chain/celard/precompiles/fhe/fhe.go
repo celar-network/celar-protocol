@@ -182,7 +182,7 @@ func (p Precompile) resultKType(
 			return KTypeUnknown
 		}
 		if k, ok := args[len(args)-1].(uint8); ok {
-			return k
+			return ktypeForWidth(k)
 		}
 		return KTypeUnknown
 	case AddMethod, SubMethod:

@@ -23,11 +23,38 @@ const (
 	baseSlotACL        = 2
 )
 
-// Plaintext type tags stored in handleMeta[h]:
+// Plaintext type tags stored in handleMeta[h], and emitted as the op-steams
+// `resultType` field once A6 lands.
+//
+// Log-coded rather than raw bit width: euint -> 3 -- euint64 -> 6, i.e.
+// log2(bits). Compact, leaves room for wider types, and matches
+// STORAGE-LAYOUT.md and the op-sream protocol. Storing the raw width here
+// was a defect - the specification, the tests and this code disagreed three
+// ways until the op-stream review caught it. at which point the value became
+// a wire format rather than private bookkeeping
+
 const (
 	KTypeEbool   uint8 = 0
+	kTypeEuint8  uint8 = 3
+	kTypeEuint16 uint8 = 4
+	kTypeEuint32 uint8 = 5
+	kTypeEuint64 uint8 = 6
 	KTypeUnknown uint8 = 0xFF
 )
+
+func ktypeForWidth(bits uint8) uint8 {
+	switch bits {
+	case 8:
+		return kTypeEuint8
+	case 16:
+		return kTypeEuint16
+	case 32:
+		return kTypeEuint32
+	case 64:
+		return kTypeEuint64
+	}
+	return KTypeUnknown
+}
 
 // metaSlot returns the lsot of handleMeta[h]:
 // keccah256(h || uint256(baseSlotHandleMeta)).
