@@ -39,3 +39,4 @@ target/
 
 # Python virtualenv for the FHE harness
 .venv/
+.runlog/
