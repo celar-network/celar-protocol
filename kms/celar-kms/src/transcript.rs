@@ -47,10 +47,15 @@ pub struct DkgRecord {
     pub params: String,
     pub tag: String,
     pub session_id: u64,
-    /// "dummy" in the skeleton. The real offline phase replaces this string —
-    /// verifiers must be able to tell which preprocessing produced a transcript.
+    /// "dummy" or "secure-small" — verifiers must be able to tell which
+    /// offline phase produced a transcript; only "secure-small" (or better)
+    /// is ceremony-grade.
     pub preprocessing: String,
     pub preproc_seed: u64,
+    /// Wall-clock of the protocol run (all parties, local). Artifact
+    /// discipline: every number datable and attributable.
+    #[serde(default)]
+    pub wall_secs: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,14 +98,15 @@ impl Transcript {
         session_id: u64,
         pk_g_sha256: String,
         parties: Vec<PartyRecord>,
+        wall_secs: Option<f64>,
     ) -> Self {
         Self {
             schema: SCHEMA.to_string(),
-            mode: if cfg.is_genesis_scale() {
-                "genesis-local-dummy-preproc".to_string()
-            } else {
-                "dev-local-dummy-preproc".to_string()
-            },
+            mode: format!(
+                "{}-local-{}-preproc",
+                if cfg.is_genesis_scale() { "genesis" } else { "dev" },
+                cfg.preprocessing.label(),
+            ),
             upstream: Upstream {
                 repo: crate::UPSTREAM_REPO.to_string(),
                 tag: crate::UPSTREAM_TAG.to_string(),
@@ -115,8 +121,9 @@ impl Transcript {
                 params: cfg.params.name().to_string(),
                 tag: cfg.tag.clone(),
                 session_id,
-                preprocessing: "dummy".to_string(),
+                preprocessing: cfg.preprocessing.label().to_string(),
                 preproc_seed: cfg.preproc_seed,
+                wall_secs,
             },
             pk_g_sha256,
             parties,
@@ -246,7 +253,7 @@ mod tests {
                 share_commitment_sha256: sha256_hex(format!("share-{role}").as_bytes()),
             })
             .collect();
-        Transcript::build(&cfg, 1, sha256_hex(b"pk"), parties)
+        Transcript::build(&cfg, 1, sha256_hex(b"pk"), parties, None)
     }
 
     #[test]

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
-use celar_kms::config::CommitteeConfig;
+use celar_kms::config::{CommitteeConfig, PreprocMode};
 use celar_kms::dkg::run_local_dkg;
 use celar_kms::transcript::Transcript;
 
@@ -28,9 +28,13 @@ enum Cmd {
         /// 30–50; smaller runs are marked as dev profile in the transcript.
         #[arg(long, default_value_t = 4)]
         parties: usize,
-        /// JSON CommitteeConfig file; overrides --parties.
+        /// JSON CommitteeConfig file; overrides --parties/--preproc.
         #[arg(long)]
         config: Option<PathBuf>,
+        /// Offline phase: dummy (dev, seconds) | secure (real MPC offline
+        /// phase — ceremony-grade, long wall-clock).
+        #[arg(long, default_value = "dummy")]
+        preproc: String,
         /// Output directory.
         #[arg(long, default_value = "dkg-out")]
         out: PathBuf,
@@ -55,6 +59,7 @@ async fn main() -> Result<()> {
         Cmd::Run {
             parties,
             config,
+            preproc,
             out,
             write_dev_keys,
         } => {
@@ -66,24 +71,40 @@ async fn main() -> Result<()> {
                 }
                 None => CommitteeConfig {
                     parties,
+                    preprocessing: match preproc.as_str() {
+                        "dummy" => PreprocMode::Dummy,
+                        "secure" => PreprocMode::Secure,
+                        other => anyhow::bail!(
+                            "unknown --preproc {other:?} (expected dummy | secure)"
+                        ),
+                    },
                     ..Default::default()
                 },
             };
             cfg.validate()?;
 
             eprintln!(
-                "celar-dkg: c={} t_reconstruction={} t_session={} params={} ({} profile)",
+                "celar-dkg: c={} t_reconstruction={} t_session={} params={} preproc={} ({} profile)",
                 cfg.parties,
                 cfg.reconstruction_quorum(),
                 cfg.session_threshold(),
                 cfg.params.name(),
+                cfg.preprocessing.label(),
                 if cfg.is_genesis_scale() { "genesis" } else { "dev" },
             );
+            if cfg.preprocessing == PreprocMode::Secure {
+                eprintln!(
+                    "celar-dkg: SECURE offline phase — real MPC triple/randomness \
+                     generation; expect a long run"
+                );
+            }
             eprintln!("celar-dkg: running local {}-party DKG…", cfg.parties);
 
             let outcome = run_local_dkg(&cfg, &out, write_dev_keys).await?;
             println!(
-                "DKG-OK pk_G {} transcript {}",
+                "DKG-OK preproc={} wall={:.1}s pk_G {} transcript {}",
+                outcome.transcript.dkg.preprocessing,
+                outcome.transcript.dkg.wall_secs.unwrap_or(f64::NAN),
                 outcome.transcript.pk_g_sha256,
                 out.join("transcript.json").display()
             );

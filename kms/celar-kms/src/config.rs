@@ -25,6 +25,28 @@ use serde::{Deserialize, Serialize};
 pub const GENESIS_MIN: usize = 30;
 pub const GENESIS_MAX: usize = 50;
 
+/// Which offline phase feeds the DKG (B1 hardening H1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum PreprocMode {
+    /// `DummyPreprocessing` — fast, NOT cryptographic. Skeleton/dev only.
+    #[default]
+    Dummy,
+    /// `SecureSmallPreprocessing` — the real MPC offline phase (triples +
+    /// randomness via sync reliable broadcast). Expensive; this is what a
+    /// genesis ceremony actually runs.
+    Secure,
+}
+
+impl PreprocMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            PreprocMode::Dummy => "dummy",
+            PreprocMode::Secure => "secure-small",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ParamsChoice {
@@ -60,7 +82,10 @@ pub struct CommitteeConfig {
     pub tag: String,
     /// DKG parameter set.
     pub params: ParamsChoice,
-    /// Seed for the dummy preprocessing (skeleton only; recorded in the
+    /// Offline phase: dummy (dev) or secure (the real MPC offline phase).
+    #[serde(default)]
+    pub preprocessing: PreprocMode,
+    /// Seed for the dummy preprocessing (dummy mode only; recorded in the
     /// transcript so a run is reproducible).
     pub preproc_seed: u64,
 }
@@ -73,6 +98,7 @@ impl Default for CommitteeConfig {
             session_threshold: None,
             tag: "celar-genesis-dev".to_string(),
             params: ParamsChoice::Test,
+            preprocessing: PreprocMode::default(),
             preproc_seed: 42,
         }
     }
