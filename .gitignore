@@ -40,3 +40,16 @@ target/
 # Python virtualenv for the FHE harness
 .venv/
 .runlog/
+
+# KMS ceremony run outputs & TLS material — MUST never be committed
+# (ceremony/ holds unprotected party shares from dev runs; certs/ holds
+# private keys. See kms/celar-kms/ceremony/DEV-KEYS-WARNING.txt)
+kms/celar-kms/ceremony/
+kms/celar-kms/certs/
+dkg-out/
+*.share.bin
+key_*.pem
+
+# Local working copy of a doc-repo file; canonical version lives in
+# doc/engg/celar-onboarding-track-b.md
+/celar-onboarding-track-b.md
