@@ -35,23 +35,23 @@ const (
 
 const (
 	KTypeEbool   uint8 = 0
-	kTypeEuint8  uint8 = 3
-	kTypeEuint16 uint8 = 4
-	kTypeEuint32 uint8 = 5
-	kTypeEuint64 uint8 = 6
+	KTypeEuint8  uint8 = 3
+	KTypeEuint16 uint8 = 4
+	KTypeEuint32 uint8 = 5
+	KTypeEuint64 uint8 = 6
 	KTypeUnknown uint8 = 0xFF
 )
 
 func ktypeForWidth(bits uint8) uint8 {
 	switch bits {
 	case 8:
-		return kTypeEuint8
+		return KTypeEuint8
 	case 16:
-		return kTypeEuint16
+		return KTypeEuint16
 	case 32:
-		return kTypeEuint32
+		return KTypeEuint32
 	case 64:
-		return kTypeEuint64
+		return KTypeEuint64
 	}
 	return KTypeUnknown
 }
