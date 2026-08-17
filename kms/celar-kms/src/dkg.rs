@@ -55,7 +55,7 @@ const LOCAL_SESSION_ID: u64 = 1;
 
 type PartyResult = (usize, FhePubKeySet, PrivateKeySet<EXTENSION_DEGREE>);
 
-fn dkg_params(choice: ParamsChoice) -> DKGParams {
+pub(crate) fn dkg_params(choice: ParamsChoice) -> DKGParams {
     match choice {
         ParamsChoice::Test => PARAMS_TEST_BK_SNS,
         ParamsChoice::NistP32SnsFglwe => NIST_PARAMS_P32_SNS_FGLWE,

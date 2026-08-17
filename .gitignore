@@ -46,7 +46,9 @@ target/
 # private keys. See kms/celar-kms/ceremony/DEV-KEYS-WARNING.txt)
 kms/celar-kms/ceremony/
 kms/celar-kms/certs/
+kms/celar-kms/epoch*/
 dkg-out/
+epoch-out/
 *.share.bin
 key_*.pem
 

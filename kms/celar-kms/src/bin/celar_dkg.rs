@@ -51,6 +51,31 @@ enum Cmd {
         #[arg(long)]
         keys_dir: Option<PathBuf>,
     },
+    /// B5: proactive same-set reshare — new epoch of shares from the previous
+    /// epoch's dev share files; pk_G invariant; optional recovery demo.
+    Reshare {
+        /// Directory holding the previous epoch (transcript.json or
+        /// reshare.json + party share files).
+        #[arg(long = "in", value_name = "DIR")]
+        in_dir: PathBuf,
+        #[arg(long, default_value = "epoch-out")]
+        out: PathBuf,
+        /// Simulate a party that LOST its share: it joins with none and must
+        /// recover a fresh one (§7.5 recovery property).
+        #[arg(long)]
+        drop_role: Option<usize>,
+    },
+    /// Verify a reshare transcript against its predecessor (+ keys dir).
+    VerifyReshare {
+        #[arg(long)]
+        transcript: PathBuf,
+        /// The PREVIOUS epoch's transcript file (genesis transcript.json or
+        /// earlier reshare.json).
+        #[arg(long)]
+        prev: PathBuf,
+        #[arg(long)]
+        keys_dir: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -124,6 +149,50 @@ async fn main() -> Result<()> {
                     t.verify_internal()?;
                     println!("VERIFY-OK (level 1: internal consistency)");
                 }
+            }
+            Ok(())
+        }
+        Cmd::Reshare { in_dir, out, drop_role } => {
+            eprintln!(
+                "celar-dkg: proactive same-set reshare from {}{}",
+                in_dir.display(),
+                drop_role
+                    .map(|r| format!(" (party {r} simulates share LOSS + recovery)"))
+                    .unwrap_or_default(),
+            );
+            let outcome = celar_kms::reshare::run_local_reshare(
+                &in_dir,
+                &out,
+                drop_role,
+            )
+            .await?;
+            println!(
+                "RESHARE-OK epoch={} wall={:.1}s pk_G {} (INVARIANT) transcript {}",
+                outcome.transcript.epoch,
+                outcome.transcript.wall_secs,
+                outcome.transcript.pk_g_sha256,
+                out.join("reshare.json").display(),
+            );
+            Ok(())
+        }
+        Cmd::VerifyReshare {
+            transcript,
+            prev,
+            keys_dir,
+        } => {
+            let t = celar_kms::reshare::ReshareTranscript::load(&transcript)?;
+            t.verify_against_prev(&prev)?;
+            if let Some(dir) = keys_dir {
+                t.verify_against_keys(&dir)?;
+                println!(
+                    "RESHARE-VERIFY-OK epoch={} (chain + pk_G invariant + all commitments changed + key digests recomputed)",
+                    t.epoch
+                );
+            } else {
+                println!(
+                    "RESHARE-VERIFY-OK epoch={} (chain + pk_G invariant + all commitments changed)",
+                    t.epoch
+                );
             }
             Ok(())
         }

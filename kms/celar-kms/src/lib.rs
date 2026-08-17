@@ -19,6 +19,7 @@ pub mod dkg;
 pub mod ics23_verify;
 pub mod mpt;
 pub mod node;
+pub mod reshare;
 pub mod transcript;
 
 /// Sharing-domain extension degree used throughout (upstream default feature
