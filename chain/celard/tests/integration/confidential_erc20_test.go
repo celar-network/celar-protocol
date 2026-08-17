@@ -124,29 +124,6 @@ func TestDeployConfidentialERC20(t *testing.T) {
 	t.Logf("active precompiles: %v",
 		k.GetParams(ctx).ActiveStaticPrecompiles)
 
-	// Raw call to 0x900, bypassing the contract entirely:
-	// trivialEncrypt(uint64,uint8) with (0, 64).
-	sel := crypto.Keccak256(
-		[]byte("trivialEncrypt(uint64,uint8)"))[:4]
-	raw := make([]byte, 0, 4+64)
-	raw = append(raw, sel...)
-	raw = append(raw, common.LeftPadBytes(
-		big.NewInt(0).Bytes(), 32)...)
-	raw = append(raw, common.LeftPadBytes(
-		big.NewInt(64).Bytes(), 32)...)
-
-	pre := common.HexToAddress(
-		"0x0000000000000000000000000000000000000900")
-	probe, perr := k.CallEVMWithData(
-		ctx, db, from, &pre, raw,
-		true, false, big.NewInt(5_000_000),
-	)
-	if perr != nil {
-		t.Fatalf("raw precompile call: %v", perr)
-	}
-	t.Logf("precompile returned %d bytes: %x",
-		len(probe.Ret), probe.Ret)
-
 	ctorArgs, err := parsed.Pack(
 		"", "Celar Test", "CELT", "ipfs://placeholder")
 	if err != nil {

@@ -35,6 +35,27 @@ import {TFHE, euint64, ebool} from "./TFHE.sol";
 /// emptiness (Track C / C1). Until C1 lands, an observer
 /// can replay an admitted ciphertext. Do not present
 /// this path as confidential in a demo.
+///
+/// ## Shared-zero exposure — no contract-side defence
+///
+/// TFHE.asEuint64(0) derives the same handle for every
+/// caller on the chain, trivialEncrypt skips the
+/// compute-access check because it takes no handle
+/// operands, and registration is first-writer-wins with no
+/// revocation. So any account can register the shared
+/// encrypted zero to itself for one call, after which this
+/// contract cannot grant on it and _ensure re-derives the
+/// same foreign-owned handle forever: deployment or every
+/// mint and transfer fails permanently.
+///
+/// This contract cannot defend itself. A per-contract salt
+/// only moves the target, since CREATE addresses are
+/// predictable. The fix is the submitter entering the
+/// handle preimage — the change scoped for C1, which
+/// closes this and input-admission front-running together.
+/// Documented rather than mitigated, because a mitigation
+/// that reads like protection and isn't is worse than a
+/// stated exposure.
 contract ConfidentialERC20 {
     // ---- metadata ----------------------------------
 
@@ -63,6 +84,7 @@ contract ConfidentialERC20 {
     mapping(bytes32 => address) private _issuedTo;
 
     error HandleNotIssuedToCaller(bytes32 handle);
+    error TransferToZero();
 
     /// Supply aggregates are public by design, so this
     /// is a handle to a trivially-encrypted public
@@ -70,7 +92,11 @@ contract ConfidentialERC20 {
     /// read, because creating a handle is a state write
     /// and this getter must stay `view`.
     euint64 private _totalSupply;
-    uint64 private _totalSupplyPlain;
+    /// The supply in plaintext. Aggregates are public by
+    /// design, and this value already sat readable in
+    /// storage — exposing it makes the claim honest
+    /// rather than changing what is disclosed.
+    uint64 public totalSupplyPlain;
 
     address public immutable minter;
 
@@ -92,12 +118,24 @@ contract ConfidentialERC20 {
         _contractURI = uri_;
         minter = msg.sender;
         _totalSupply = TFHE.asEuint64(0);
+        // Owning the handle is not sufficient to reveal
+        // it — the committee serves reveal only against an
+        // explicit per-handle grant. Supply is public by
+        // design, so the grant is issued at creation.
+        TFHE.allow(_totalSupply, address(this), TFHE.PERM_REVEAL);
     }
 
     // ---- ERC-165 -----------------------------------
 
+    /// Deliberately does NOT claim the ERC-7984 id
+    /// (0x4958f2a4) while the operator model,
+    /// confidentialTransferFrom and the AndCall family are
+    /// absent. Claiming it would make integrators call
+    /// functions that do not exist — the on-chain form of
+    /// the same over-claim the project's copy rules
+    /// forbid. Restore it when those land.
     function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
-        return interfaceId == 0x4958f2a4 || interfaceId == 0x01ffc9a7;
+        return interfaceId == 0x01ffc9a7;
     }
 
     function contractURI() external view returns (string memory) {
@@ -116,6 +154,18 @@ contract ConfidentialERC20 {
 
     function confidentialTotalSupply() external view returns (bytes32) {
         return euint64.unwrap(_totalSupply);
+    }
+
+    /// Ask the committee to publish the supply handle.
+    /// Callable by anyone: the value is public by design,
+    /// and the contract owns the handle, so it is the
+    /// party entitled to request. Without this the handle
+    /// returned by confidentialTotalSupply is unreadable
+    /// by everyone including the minter — the ACL has no
+    /// wildcard, so "public" needed a mechanism, not just
+    /// a comment.
+    function revealTotalSupply() external returns (bytes32) {
+        return TFHE.requestReveal(_totalSupply);
     }
 
     // ---- transfers ---------------------------------
@@ -142,8 +192,13 @@ contract ConfidentialERC20 {
         _balances[to] = TFHE.add(_ensure(to), minted);
         _grantRead(_balances[to], to);
         _record(_balances[to], to);
-        _totalSupplyPlain += amount;
-        _totalSupply = TFHE.asEuint64(_totalSupplyPlain);
+        totalSupplyPlain += amount;
+        _totalSupply = TFHE.asEuint64(totalSupplyPlain);
+        // Owning the handle is not sufficient to reveal
+        // it — the committee serves reveal only against an
+        // explicit per-handle grant. Supply is public by
+        // design, so the grant is issued at creation.
+        TFHE.allow(_totalSupply, address(this), TFHE.PERM_REVEAL);
 
         // from = 0x0 on mint, per the EIP's SHOULD.
         emit ConfidentialTransfer(address(0), to, euint64.unwrap(minted));
@@ -152,6 +207,7 @@ contract ConfidentialERC20 {
     // ---- internals ---------------------------------
 
     function _transfer(address from, address to, euint64 amount) private returns (bytes32) {
+        if (to == address(0)) revert TransferToZero();
         euint64 fromBal = _ensure(from);
         _ensure(to);
 
