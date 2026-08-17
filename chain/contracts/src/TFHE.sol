@@ -1,11 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.28;
 
-/// @dev Encrypted 64-bit unsigned integer. The value is a 32-byte
-/// handle: an opaque reference to ciphertext held off-chain.
-/// The distinct type is deliberate — it stops an encrypted
-/// boolean being used where a number is meant, which the backend
-/// also enforces and which has caught real bugs there.
+/// @dev Encrypted 64-bit unsigned integer. The value is a
+/// 32-byte handle: an opaque reference to ciphertext held
+/// off-chain. The distinct Solidity type stops an
+/// encrypted boolean being used where a number is meant.
+///
+/// The type tag is recorded at registration but NOT
+/// validated anywhere in the precompile — resultKType and
+/// operandKType only propagate it. So this barrier is
+/// Solidity-side only, and euint64.wrap() erases it
+/// entirely. Enforcement is a precompile task, not a
+/// property to rely on today.
 type euint64 is bytes32;
 
 /// @dev Encrypted boolean, produced by comparisons and boolean
@@ -47,12 +53,22 @@ library TFHE {
     uint8 internal constant PERM_REVEAL = 2;
 
     error PrecompileFailed(bytes reason);
+    error PrecompileInactive();
 
     // ---- input admission --------------------------------------
 
-    /// Public constant to encrypted value. Carries no secrecy —
-    /// the value is public by definition — and is the right tool
-    /// for literals such as zero.
+    /// Public constant to encrypted value. Carries no
+    /// secrecy — the value is public by definition.
+    ///
+    /// WARNING: the handle is derived without the caller,
+    /// so every contract on the chain calling asEuint64(0)
+    /// derives the same handle, and registration is
+    /// first-writer-wins with no revocation. Any account
+    /// can claim it for one call and permanently break
+    /// every contract that later needs it. Until the
+    /// submitter enters the preimage (C1), this is an
+    /// exposure, not a convenience — see the shared-zero
+    /// note in ConfidentialERC20.sol.
     function asEuint64(uint64 value) internal returns (euint64) {
         bytes32 r = _call(abi.encodeWithSignature("trivialEncrypt(uint64,uint8)", value, uint8(64)));
         return euint64.wrap(r);
@@ -170,7 +186,24 @@ library TFHE {
     }
 
     function _call(bytes memory data) private returns (bytes32) {
-        return abi.decode(_raw(data), (bytes32));
+        bytes memory ret = _raw(data);
+        // A call to an address with no code succeeds with
+        // empty returndata — and precompiles have no code,
+        // so extcodesize cannot distinguish them. Activation
+        // in evm params is a second switch, independent of
+        // registration in the app: when it is missing, every
+        // call here returns ok with nothing, and the failure
+        // surfaces as a bare abi.decode panic frames away
+        // from the cause. Worse, ACL grants go through _raw
+        // and discard the return, so they would silently
+        // no-op forever.
+        //
+        // Checking here makes deployment the failure point:
+        // a constructor creating an encrypted zero cannot
+        // succeed on a chain where the precompile is
+        // inactive.
+        if (ret.length != 32) revert PrecompileInactive();
+        return abi.decode(ret, (bytes32));
     }
 
     function _raw(bytes memory data) private returns (bytes memory) {
