@@ -31,6 +31,27 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// B6: write a committee roster from a certs directory (dev helper —
+    /// computes the real CA pins; a production roster is authored during
+    /// vetting, not generated).
+    RosterInit {
+        #[arg(long, default_value_t = 4)]
+        parties: usize,
+        #[arg(long, default_value = "certs")]
+        certs_dir: PathBuf,
+        /// CA cert filename pattern ({i} = role) — the pinned files.
+        #[arg(long, default_value = "cert_party{i}.pem")]
+        ca_pattern: String,
+        #[arg(long, default_value = "core1.party{i}")]
+        host_pattern: String,
+        #[arg(long, default_value_t = 51000)]
+        base_port: u16,
+        /// dev | permissioned-genesis (genesis enforces c ∈ [30,50] etc.)
+        #[arg(long, default_value = "dev")]
+        mode: String,
+        #[arg(long, default_value = "roster.json")]
+        out: PathBuf,
+    },
     /// Write n node-config JSONs for a local ceremony (one process each).
     GenConfigs {
         #[arg(long, default_value_t = 4)]
@@ -61,6 +82,10 @@ enum Cmd {
         out_dir: PathBuf,
         #[arg(long, default_value_t = false)]
         write_dev_keys: bool,
+        /// B6: govern the ceremony by a vetted roster (peers, MPC identities
+        /// and committee size come FROM the roster; nodes verify CA pins).
+        #[arg(long)]
+        roster: Option<PathBuf>,
     },
     /// Run this node's side of the ceremony (blocks until DKG completes).
     Run {
@@ -90,6 +115,59 @@ async fn main() -> Result<()> {
         .map_err(|_| anyhow::anyhow!("failed to install rustls CryptoProvider"))?;
 
     match Cli::parse().cmd {
+        Cmd::RosterInit {
+            parties,
+            certs_dir,
+            ca_pattern,
+            host_pattern,
+            base_port,
+            mode,
+            out,
+        } => {
+            use celar_kms::committee::{
+                CommitteeMode, CommitteeRoster, RosterMember, ROSTER_SCHEMA,
+            };
+            use celar_kms::transcript::sha256_hex;
+            let mode = match mode.as_str() {
+                "dev" => CommitteeMode::Dev,
+                "permissioned-genesis" => CommitteeMode::PermissionedGenesis,
+                other => anyhow::bail!("unknown --mode {other:?}"),
+            };
+            let members = (1..=parties)
+                .map(|i| -> Result<RosterMember> {
+                    let ca_path = certs_dir.join(ca_pattern.replace("{i}", &i.to_string()));
+                    let pin = sha256_hex(&fs::read(&ca_path).with_context(|| {
+                        format!("reading CA file {} for pinning", ca_path.display())
+                    })?);
+                    let host = host_pattern.replace("{i}", &i.to_string());
+                    Ok(RosterMember {
+                        role: i,
+                        org: format!("dev-org-{i}"),
+                        jurisdiction: None,
+                        host: host.clone(),
+                        port: base_port + i as u16,
+                        mpc_identity: host,
+                        ca_cert_sha256: pin,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let roster = CommitteeRoster {
+                schema: ROSTER_SCHEMA.to_string(),
+                mode,
+                tag: "celar-genesis-dev".into(),
+                params: celar_kms::config::ParamsChoice::Test,
+                members,
+            };
+            roster.save(&out)?;
+            println!(
+                "ROSTER-OK {} members, quorum {}, digest {} → {}",
+                roster.parties(),
+                roster.reconstruction_quorum(),
+                roster.digest()?,
+                out.display()
+            );
+            Ok(())
+        }
         Cmd::GenConfigs {
             parties,
             base_port,
@@ -101,23 +179,49 @@ async fn main() -> Result<()> {
             ca_pattern,
             out_dir,
             write_dev_keys,
+            roster,
         } => {
             fs::create_dir_all(&out_dir)?;
-            let committee = CommitteeConfig {
-                parties,
-                preprocessing: celar_kms::config::PreprocMode::Secure,
-                ..Default::default()
-            };
-            committee.validate()?;
 
-            let peers: Vec<PeerEntry> = (1..=parties)
-                .map(|i| PeerEntry {
-                    role: i,
-                    host: host_pattern.replace("{i}", &i.to_string()),
-                    port: base_port + i as u16,
-                    mpc: Some(mpc_pattern.replace("{i}", &i.to_string())),
-                })
-                .collect();
+            // B6: a roster, when given, is the source of truth for the
+            // committee shape and every peer's identity.
+            let loaded_roster = roster
+                .as_ref()
+                .map(|p| celar_kms::committee::CommitteeRoster::load(p))
+                .transpose()?;
+
+            let (committee, peers): (CommitteeConfig, Vec<PeerEntry>) = match &loaded_roster {
+                Some(r) => (
+                    r.committee_config()?,
+                    r.members
+                        .iter()
+                        .map(|m| PeerEntry {
+                            role: m.role,
+                            host: m.host.clone(),
+                            port: m.port,
+                            mpc: Some(m.mpc_identity.clone()),
+                        })
+                        .collect(),
+                ),
+                None => {
+                    let committee = CommitteeConfig {
+                        parties,
+                        preprocessing: celar_kms::config::PreprocMode::Secure,
+                        ..Default::default()
+                    };
+                    committee.validate()?;
+                    let peers = (1..=parties)
+                        .map(|i| PeerEntry {
+                            role: i,
+                            host: host_pattern.replace("{i}", &i.to_string()),
+                            port: base_port + i as u16,
+                            mpc: Some(mpc_pattern.replace("{i}", &i.to_string())),
+                        })
+                        .collect();
+                    (committee, peers)
+                }
+            };
+            let parties = committee.parties;
             let pat = |p: &str, i: usize| {
                 certs_dir.join(p.replace("{i}", &i.to_string())).display().to_string()
             };
@@ -139,6 +243,7 @@ async fn main() -> Result<()> {
                     startup_wait_secs: 5,
                     out_dir: out_dir.clone(),
                     write_dev_keys,
+                    roster: roster.clone(),
                 };
                 let path = out_dir.join(format!("node_{i:03}.json"));
                 fs::write(&path, serde_json::to_string_pretty(&cfg)?)?;
@@ -205,6 +310,14 @@ async fn main() -> Result<()> {
                 {
                     bail!("fragment {} disagrees on params/tag/session_id", f.role);
                 }
+                // B6: either every node ran under the SAME roster, or none did.
+                if f.roster_sha256 != first.roster_sha256 {
+                    bail!(
+                        "fragment {} ran under a different roster ({:?} vs {:?}) — \
+                         refusing to collect a mixed ceremony",
+                        f.role, f.roster_sha256, first.roster_sha256
+                    );
+                }
             }
 
             let committee = CommitteeConfig {
@@ -232,6 +345,7 @@ async fn main() -> Result<()> {
                 "{}-grpc-mtls-secure-small-preproc",
                 if committee.is_genesis_scale() { "genesis" } else { "dev" },
             );
+            transcript.roster_sha256 = first.roster_sha256.clone();
             transcript.save(&dir.join("transcript.json"))?;
             transcript.verify_internal()?;
             println!(

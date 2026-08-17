@@ -84,6 +84,11 @@ pub struct Transcript {
     /// SHA-256 over the serialized group public keyset (identical across
     /// parties — checked at generation time).
     pub pk_g_sha256: String,
+    /// B6: canonical digest of the vetted committee roster this ceremony ran
+    /// under (None for dev runs without a roster). A transcript with a roster
+    /// digest proves WHICH committee keyed the network, not just how many.
+    #[serde(default)]
+    pub roster_sha256: Option<String>,
     pub parties: Vec<PartyRecord>,
     pub environment: Environment,
 }
@@ -126,6 +131,7 @@ impl Transcript {
                 wall_secs,
             },
             pk_g_sha256,
+            roster_sha256: None, // set by the caller when a roster governs the run
             parties,
             environment: Environment {
                 os: std::env::consts::OS.to_string(),
