@@ -2,8 +2,15 @@
 //! between members (the S2 transport decision), running the fixed genesis-DKG
 //! phase sequence:
 //!
-//!   serve mTLS ⇄ connect to peers → PRSS init → secure offline phase →
-//!   fill DKG preprocessing → distributed keygen → write transcript fragment
+//!   serve mTLS ⇄ connect to peers → [SYNC session sid] PRSS init → secure
+//!   offline phase → fill DKG preprocessing → [ASYNC session sid+1]
+//!   distributed keygen → write transcript fragment
+//!
+//! The two-session split mirrors upstream production (core/service): Sync
+//! mode is only sound for the broadcast-based phases; the online keygen's
+//! robust opens MUST run in Async mode, or round-deadline races make
+//! parties reconstruct from different share subsets and derive different
+//! pk_G with no detectable corruption (H2 root cause, 2026-08-17).
 //!
 //! No choreographer: every node runs the same deterministic sequence from its
 //! config. The operator collects the n fragments and `collect`s them into the
@@ -39,6 +46,8 @@ use threshold_execution::runtime::sessions::small_session::SmallSession;
 use threshold_execution::runtime::sessions::session_parameters::{
     GenericParameterHandles, SessionParameters,
 };
+use threshold_execution::online::preprocessing::RandomPreprocessing;
+use threshold_execution::sharing::open::{RobustOpen, SecureRobustOpen};
 use threshold_execution::small_execution::offline::{Preprocessing, SecureSmallPreprocessing};
 use threshold_execution::small_execution::prss::{DerivePRSSState, PRSSInit, RobustSecurePrssInit};
 use threshold_execution::tfhe_internals::parameters::DKGParamsBasics;
@@ -98,7 +107,10 @@ pub struct NodeConfig {
     pub peers: Vec<PeerEntry>,
     pub tls: TlsPaths,
     pub committee: CommitteeConfig,
-    /// Ceremony session id (must match across nodes).
+    /// Ceremony session id (must match across nodes). The node uses TWO
+    /// derived MPC sessions: `session_id` for the sync phases (PRSS init +
+    /// offline preprocessing + fill) and `session_id + 1` for the async
+    /// online keygen — so leave a gap between ceremonies' ids.
     #[serde(default = "default_session_id")]
     pub session_id: u64,
     /// Per-round network timeout — load-bearing (H1 finding: heavy compute
@@ -111,6 +123,13 @@ pub struct NodeConfig {
     pub out_dir: PathBuf,
     #[serde(default)]
     pub write_dev_keys: bool,
+    /// B6: path to the vetted committee roster governing this ceremony.
+    /// When set, the node validates the roster (§7.7 rules for genesis mode),
+    /// checks its OWN entry and every peer against it, verifies the TLS
+    /// trust-root set matches the roster's CA pins exactly, and stamps the
+    /// roster digest into its transcript fragment.
+    #[serde(default)]
+    pub roster: Option<PathBuf>,
 }
 
 fn default_listen() -> String {
@@ -181,6 +200,9 @@ pub struct TranscriptFragment {
     pub share_commitment_sha256: String,
     pub wall_secs: f64,
     pub transport: String,
+    /// B6: digest of the roster this node ran under (None = dev, rosterless).
+    #[serde(default)]
+    pub roster_sha256: Option<String>,
 }
 
 pub const FRAGMENT_SCHEMA: &str = "celar-dkg-fragment/v0";
@@ -237,6 +259,59 @@ fn server_tls(tls: &TlsPaths) -> Result<ServerTlsConfig> {
 /// protocol completes; returns the fragment (also written to out_dir).
 pub async fn run_ceremony(cfg: &NodeConfig) -> Result<TranscriptFragment> {
     cfg.validate()?;
+
+    // B6: enforce the vetted roster before any networking happens.
+    let roster_sha256 = match &cfg.roster {
+        None => None,
+        Some(path) => {
+            let roster = crate::committee::CommitteeRoster::load(path)?; // validates §7.7 rules
+            if roster.parties() != cfg.committee.parties {
+                bail!(
+                    "roster has {} members but committee config says {}",
+                    roster.parties(),
+                    cfg.committee.parties
+                );
+            }
+            // My own entry and every peer must match the roster exactly.
+            for peer in &cfg.peers {
+                let member = roster
+                    .members
+                    .iter()
+                    .find(|m| m.role == peer.role)
+                    .with_context(|| format!("peer role {} not in the roster", peer.role))?;
+                let peer_mpc = peer.mpc.clone().unwrap_or_else(|| peer.host.clone());
+                if member.host != peer.host
+                    || member.port != peer.port
+                    || member.mpc_identity != peer_mpc
+                {
+                    bail!(
+                        "peer {} deviates from the vetted roster (config {}:{} mpc {:?} \
+                         vs roster {}:{} mpc {:?}) — refusing to key with an unvetted party",
+                        peer.role, peer.host, peer.port, peer_mpc,
+                        member.host, member.port, member.mpc_identity
+                    );
+                }
+            }
+            // Trust roots must be EXACTLY the roster's pinned CA set.
+            let ca_paths: Vec<String> = cfg
+                .tls
+                .calist
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+            roster.verify_ca_set(&ca_paths)?;
+            eprintln!(
+                "celar-kms-node[{}]: roster VERIFIED ({} vetted members, quorum {}, digest {})",
+                cfg.role,
+                roster.parties(),
+                roster.reconstruction_quorum(),
+                &roster.digest()?[..16],
+            );
+            Some(roster.digest()?)
+        }
+    };
+
     fs::create_dir_all(&cfg.out_dir)?;
     let my_role = Role::indexed_from_one(cfg.role);
     let sid = SessionId::from(cfg.session_id as u128);
@@ -282,17 +357,20 @@ pub async fn run_ceremony(cfg: &NodeConfig) -> Result<TranscriptFragment> {
         )
     }))
     .into();
+    let role_set: std::collections::HashSet<Role> = assignment.keys().cloned().collect();
+
+    // SYNC session: PRSS init (broadcast assumes synchrony), the secure
+    // offline phase, and the DKG-preprocessing fill — mirroring upstream
+    // production, which runs PRSS/broadcast/preprocessing in Sync mode.
     let networking = manager
         .make_network_session(sid, &assignment, my_role, NetworkMode::Sync)
         .await
         .context("creating the network session (are all peers reachable?)")?;
-
-    let roles: Vec<Role> = assignment.keys().cloned().collect();
     let params = SessionParameters::new(
         cfg.committee.session_threshold() as u8,
         sid,
         my_role,
-        roles.into_iter().collect(),
+        role_set.clone(),
     )
     .map_err(|e| anyhow::anyhow!("session parameters: {e:?}"))?;
     let mut base = BaseSession::new(params, networking, AesRng::from_random_seed())
@@ -326,7 +404,10 @@ pub async fn run_ceremony(cfg: &NodeConfig) -> Result<TranscriptFragment> {
     let handle = params_dkg.get_params_basics_handle();
     let batch = BatchParams {
         triples: handle.total_triples_required(keyset_config),
-        randoms: handle.total_randomness_required(keyset_config),
+        // +2 spare randoms: consumed by the divergence CANARIES below (one
+        // opened in the sync session, one in the async session). The fill
+        // consumes by count, so identical popping on all nodes stays aligned.
+        randoms: handle.total_randomness_required(keyset_config) + 2,
     };
 
     session
@@ -339,6 +420,31 @@ pub async fn run_ceremony(cfg: &NodeConfig) -> Result<TranscriptFragment> {
         .await
         .map_err(|e| anyhow::anyhow!("secure offline phase failed: {e:?}"))?;
 
+    // CANARY A (divergence bisection, H2): open one spare random in the SYNC
+    // session. If this digest differs across nodes, the divergence is already
+    // present in the PRSS/offline material; if it agrees, the offline output
+    // is consistent and the fault is later.
+    {
+        let canary_share = RandomPreprocessing::<Poly>::next_random_vec(&mut small_preproc, 1)
+            .map_err(|e| anyhow::anyhow!("canary A draw: {e:?}"))?
+            .pop()
+            .context("canary A: empty draw")?;
+        let opened = SecureRobustOpen::default()
+            .robust_open_to_all(
+                &session,
+                canary_share.value(),
+                cfg.committee.session_threshold(),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("canary A open: {e:?}"))?
+            .context("canary A: no reconstruction")?;
+        eprintln!(
+            "celar-kms-node[{}]: CANARY-A (sync/offline) {}",
+            cfg.role,
+            &sha256_hex(format!("{opened:?}").as_bytes())[..16],
+        );
+    }
+
     let mut dkg_preproc = create_memory_factory().create_dkg_preprocessing_with_sns();
     dkg_preproc
         .fill_from_base_preproc(
@@ -350,11 +456,74 @@ pub async fn run_ceremony(cfg: &NodeConfig) -> Result<TranscriptFragment> {
         .await
         .map_err(|e| anyhow::anyhow!("filling DKG preprocessing failed: {e:?}"))?;
 
-    eprintln!("celar-kms-node[{}]: distributed keygen…", cfg.role);
+    // ONLINE KEYGEN — a fresh ASYNC session, exactly like upstream production
+    // (H2 root cause, 2026-08-17): the reconstruction function is selected by
+    // network mode (open.rs). Sync uses reconstruct_w_errors_sync, which
+    // reconstructs from whatever share subset beat the round deadline and
+    // error-corrects stragglers away — over a real network different parties
+    // see different subsets and derive DIFFERENT pk_G with empty corrupt sets
+    // (observed thrice, split along a contiguous role boundary). Async uses
+    // the stricter consistency-checked reconstruction and effectively no
+    // deadline. Production runs Sync only for PRSS/broadcast/preprocessing
+    // and the online DKG in Async with a separate derived session id.
+    let sid_online = SessionId::from(cfg.session_id as u128 + 1);
+    let networking_online = manager
+        .make_network_session(sid_online, &assignment, my_role, NetworkMode::Async)
+        .await
+        .context("creating the online (async) network session")?;
+    let params_online = SessionParameters::new(
+        cfg.committee.session_threshold() as u8,
+        sid_online,
+        my_role,
+        role_set.clone(),
+    )
+    .map_err(|e| anyhow::anyhow!("online session parameters: {e:?}"))?;
+    let base_online = BaseSession::new(params_online, networking_online, AesRng::from_random_seed())
+        .map_err(|e| anyhow::anyhow!("online base session: {e:?}"))?;
+    let prss_state_online = prss_setup.new_prss_session_state(sid_online);
+    let mut online = SmallSession::<Poly>::new_from_prss_state(base_online, prss_state_online)
+        .map_err(|e| anyhow::anyhow!("online small session: {e:?}"))?;
+
+    // CANARY B: open a second spare random over the ASYNC session. Agreement
+    // here (with CANARY A agreeing too) pins any pk split on fill/keygen;
+    // disagreement here with A agreeing pins it on the async session wiring
+    // (PRSS state re-derivation or session identity).
+    {
+        let canary_share = RandomPreprocessing::<Poly>::next_random_vec(&mut small_preproc, 1)
+            .map_err(|e| anyhow::anyhow!("canary B draw: {e:?}"))?
+            .pop()
+            .context("canary B: empty draw")?;
+        let opened = SecureRobustOpen::default()
+            .robust_open_to_all(
+                &online,
+                canary_share.value(),
+                cfg.committee.session_threshold(),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("canary B open: {e:?}"))?
+            .context("canary B: no reconstruction")?;
+        eprintln!(
+            "celar-kms-node[{}]: CANARY-B (async/pre-keygen) {}",
+            cfg.role,
+            &sha256_hex(format!("{opened:?}").as_bytes())[..16],
+        );
+    }
+
+    eprintln!("celar-kms-node[{}]: distributed keygen (async session)…", cfg.role);
     let mut tag = tfhe::Tag::default();
     tag.set_data(cfg.committee.tag.as_bytes());
-    let (pk, sk) = SecureOnlineDistributedKeyGen128::<EXTENSION_DEGREE>::keygen(
-        session.get_mut_base_session(),
+    // COMPRESSED keygen (H2 root cause #2, 2026-08-17): the ceremony commits
+    // to the COMPRESSED (integer-domain, XOF-seeded) keyset — a deterministic
+    // function of the agreed seed + MPC-opened values, bit-identical across
+    // parties. The full ServerKey stores bootstrapping keys in the FOURIER
+    // domain (f64), and that local integer→float conversion is not
+    // bit-reproducible even across processes on one machine (tfhe-fft
+    // runtime dispatch / A3 finding) — committing to the decompressed form
+    // made honest parties' pk_G digests differ while every opened value
+    // agreed. Decompression is a LOCAL operation, done per node at use time.
+    // This also matches upstream production, which stores compressed keysets.
+    let (compressed_pk, sk) = SecureOnlineDistributedKeyGen128::<EXTENSION_DEGREE>::compressed_keygen(
+        &mut online,
         dkg_preproc.as_mut(),
         params_dkg,
         tag,
@@ -362,10 +531,27 @@ pub async fn run_ceremony(cfg: &NodeConfig) -> Result<TranscriptFragment> {
     .await
     .map_err(|e| anyhow::anyhow!("distributed keygen failed: {e:?}"))?;
 
+    // Evidence over vibes: if the robust layers disqualified anyone, each
+    // party's local corrupt-set says WHO and explains pk_G splits at collect
+    // (a party that the other n−1 excluded derives a different key than
+    // they do, while still "completing" locally). Checked on BOTH sessions.
+    let mut corrupt = session.get_mut_base_session().corrupt_roles().clone();
+    corrupt.extend(online.get_mut_base_session().corrupt_roles().iter().cloned());
+    if corrupt.is_empty() {
+        eprintln!("celar-kms-node[{}]: corrupt set EMPTY — clean run", cfg.role);
+    } else {
+        eprintln!(
+            "celar-kms-node[{}]: ⚠ corrupt set NOT empty: {:?} — this run's \
+             pk_G will disagree across parties; abort and retry the ceremony",
+            cfg.role, corrupt
+        );
+    }
+
     let wall_secs = started.elapsed().as_secs_f64();
 
-    // 6) fragment + optional dev key material.
-    let pk_bytes = bincode::serialize(&pk).context("serializing pk_G")?;
+    // 6) fragment + optional dev key material. pk_G identity = digest of the
+    // COMPRESSED keyset (see the compressed_keygen comment above).
+    let pk_bytes = bincode::serialize(&compressed_pk).context("serializing compressed pk_G")?;
     let sk_bytes = bincode::serialize(&sk).context("serializing share vector")?;
     let fragment = TranscriptFragment {
         schema: FRAGMENT_SCHEMA.to_string(),
@@ -378,6 +564,7 @@ pub async fn run_ceremony(cfg: &NodeConfig) -> Result<TranscriptFragment> {
         share_commitment_sha256: sha256_hex(&sk_bytes),
         wall_secs,
         transport: "grpc-mtls".to_string(),
+        roster_sha256,
     };
     fs::write(
         cfg.out_dir.join(fragment_file(cfg.role)),
@@ -388,6 +575,12 @@ pub async fn run_ceremony(cfg: &NodeConfig) -> Result<TranscriptFragment> {
         if cfg.role == 1 {
             fs::write(cfg.out_dir.join(crate::transcript::PK_FILE), &pk_bytes)?;
         }
+        // Per-role pk dump (H2 bisection): lets `cmp -l` locate the first
+        // divergent byte offset between two nodes' pk serializations.
+        fs::write(
+            cfg.out_dir.join(format!("pk_g_{:03}.bin", cfg.role)),
+            &pk_bytes,
+        )?;
         fs::write(
             cfg.out_dir.join("DEV-KEYS-WARNING.txt"),
             "Key material written by a DEV ceremony run for transcript\n\
