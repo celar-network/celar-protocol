@@ -136,15 +136,28 @@ contract ConfidentialERC20 {
 
     function _transfer(address from, address to, euint64 amount) private returns (bytes32) {
         euint64 fromBal = _ensure(from);
-        euint64 toBal = _ensure(to);
+        _ensure(to);
 
-        // The whole authorization decision, expressed
-        // arithmetically.
         ebool ok = TFHE.le(amount, fromBal);
         euint64 actual = TFHE.select(ok, amount, TFHE.asEuint64(0));
 
         _balances[from] = TFHE.sub(fromBal, actual);
-        _balances[to] = TFHE.add(toBal, actual);
+
+        // Re-read rather than reuse a cached handle: when
+        // from == to, the credit must apply to the debited
+        // balance, not to the value read before the debit.
+        // Caching both operands up front made a
+        // self-transfer overwrite the debit with the
+        // credit, so the balance grew by the amount sent —
+        // repeatable, and invisible off-chain because no
+        // plaintext is ever exposed.
+        //
+        // Deliberately no `if (from == to)`: a plaintext
+        // branch would give a self-transfer a different
+        // gas profile and a different emitted handle,
+        // which is a distinguisher an observer can use.
+        // The re-read costs one SLOAD in every case.
+        _balances[to] = TFHE.add(_balances[to], actual);
 
         _grantRead(_balances[from], from);
         _grantRead(_balances[to], to);
