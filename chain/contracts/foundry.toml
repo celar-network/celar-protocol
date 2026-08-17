@@ -1,0 +1,15 @@
+# Celar Solidity workspace.
+#
+# The confidential surface is a precompile at a fixed address, so most tests
+# need a running node: `chain/devnet/run-node.sh ~/celar-solo/node0`.
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+libs = ["lib"]
+solc = "0.8.28"
+optimizer = true
+optimizer_runs = 200
+
+[rpc_endpoints]
+devnet = "http://127.0.0.1:8545"

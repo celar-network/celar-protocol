@@ -106,6 +106,9 @@ func (p Precompile) Run(
 
 	case TrivialEncryptMethod, AddMethod, SubMethod, LeMethod, LtMethod,
 		EqMethod, AndMethod, OrMethod, NotMethod, SelectMethod, CastMethod:
+		if err := p.checkComputeAccess(evm.StateDB, contract.Caller(), method, argBz, readonly); err != nil {
+			return nil, err
+		}
 		h := p.deriveHandle(method, argBz)
 		p.registerHandle(evm.StateDB, h, contract.Caller(),
 			p.resultKType(evm.StateDB, method, argBz), readonly)
@@ -182,7 +185,7 @@ func (p Precompile) resultKType(
 			return KTypeUnknown
 		}
 		if k, ok := args[len(args)-1].(uint8); ok {
-			return k
+			return ktypeForWidth(k)
 		}
 		return KTypeUnknown
 	case AddMethod, SubMethod:
@@ -291,6 +294,56 @@ func (p Precompile) checkServable(
 			return nil
 		}
 		return errors.New("fhe precompile: reveal not granted for this handle")
+	}
+	return nil
+}
+
+// checkComputeAcess enforces the frozen ABI's compute permission: a
+// caller may operate on a handle only if it owns that handle of holds
+// a comoute grant on it
+//
+// Without this the access-control list is decorative. Handles are
+// public - they appear in calldata, events and contract storage - so
+// anyone could compute a predicate of somebody else's encrypted value,
+// take ownership of the result because results are registered to their
+// creator, grant themselves reveal on it, and have the committee
+// disclose the answer. Around sixty-four such queries recover a
+// balance exactly.
+//
+// Skipped in read-only contexts fo the same reason registration is:
+// a static call commits nothing, handles derived within it are never
+// registered, and enforcing here would break eth_call simulation of
+// multi-step flows.
+func (p Precompile) checkComputeAccess(
+	db stateStore,
+	caller common.Address,
+	method *abi.Method,
+	argBz []byte,
+	readonly bool,
+) error {
+	if readonly {
+		return nil
+	}
+	for i, in := range method.Inputs {
+		if in.Type.T != abi.FixedBytesTy || in.Type.Size != 32 {
+			continue // not a handle: a widht, a value, an address
+		}
+		off := i * 32
+		if len(argBz) < off+32 {
+			return errors.New("fhe precompile: truncated operand")
+		}
+		h := common.BytesToHash(argBz[off : off+32])
+		meta := p.getMeta(db, h)
+		if !metaExists(meta) {
+			return fmt.Errorf("fhe precompile: unknown handle %s", h.Hex())
+		}
+		if metaOwner(meta) == caller {
+			continue
+		}
+		if p.hasPerm(db, h, caller, permBitCompute) {
+			continue
+		}
+		return fmt.Errorf("fhe precompile: caller lacks compute permission on %s", h.Hex())
 	}
 	return nil
 }
