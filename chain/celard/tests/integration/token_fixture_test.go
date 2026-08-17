@@ -18,6 +18,7 @@ import (
 	evmkeeper "github.com/cosmos/evm/x/vm/keeper"
 	"github.com/cosmos/evm/x/vm/statedb"
 
+	storetypes "github.com/cosmos/cosmos-sdk/store/v2/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 )
 
@@ -32,6 +33,7 @@ type tokenFixture struct {
 	addr  common.Address
 	owner common.Address
 	other common.Address
+	nw    *network.UnitTestNetwork
 }
 
 func deployToken(t *testing.T) *tokenFixture {
@@ -87,6 +89,7 @@ func deployToken(t *testing.T) *tokenFixture {
 	}
 
 	return &tokenFixture{
+		nw:    nw,
 		ctx:   ctx,
 		k:     k,
 		db:    db,
@@ -156,4 +159,24 @@ func (f *tokenFixture) balanceOf(
 	}
 	arr := out[0].([32]byte)
 	return common.BytesToHash(arr[:])
+}
+
+// A reverted call leaves the context's gas meter in a state
+// that panics on the next use, so any test expecting a
+// revert must take a fresh context before continuing.
+// Deliberately not NextBlock(): rolling the block discards
+// the writes made against this context, including the
+// deployed contract itself.
+func (f *tokenFixture) refresh(t *testing.T) {
+	t.Helper()
+	// The revert leaves the shared context's gas meter
+	// poisoned, and GetContext hands back that same
+	// context — so the meter has to be replaced, not
+	// merely re-fetched. NextBlock would also clear it,
+	// but discards the writes made against this context,
+	// the deployed contract included.
+	f.ctx = f.nw.GetContext().WithGasMeter(
+		storetypes.NewInfiniteGasMeter())
+	f.db = statedb.New(
+		f.ctx, f.k, statedb.NewEmptyTxConfig())
 }

@@ -51,6 +51,19 @@ contract ConfidentialERC20 {
 
     mapping(address => euint64) private _balances;
 
+    /// Which account each handle was issued to. The
+    /// precompile authorizes the *caller*, which for any
+    /// contract call is this contract — and this contract
+    /// owns every handle it created, so its ACL check
+    /// cannot tell whether the person behind the call has
+    /// any claim to the handle they named. Balance handles
+    /// are public through the getter, so without this the
+    /// token computes on a victim's balance and grants the
+    /// attacker read access to the result.
+    mapping(bytes32 => address) private _issuedTo;
+
+    error HandleNotIssuedToCaller(bytes32 handle);
+
     /// Supply aggregates are public by design, so this
     /// is a handle to a trivially-encrypted public
     /// number, not a secret. Stored rather than made on
@@ -108,6 +121,9 @@ contract ConfidentialERC20 {
     // ---- transfers ---------------------------------
 
     function confidentialTransfer(address to, bytes32 amount) external returns (bytes32) {
+        if (_issuedTo[amount] != msg.sender) {
+            revert HandleNotIssuedToCaller(amount);
+        }
         return _transfer(msg.sender, to, euint64.wrap(amount));
     }
 
@@ -115,6 +131,7 @@ contract ConfidentialERC20 {
     /// it. See the known-unsound note above.
     function transferFromExternal(address to, bytes calldata ct, bytes calldata inputProof) external returns (bytes32) {
         euint64 amount = TFHE.fromExternal(ct, inputProof);
+        _record(amount, msg.sender);
         return _transfer(msg.sender, to, amount);
     }
 
@@ -124,7 +141,7 @@ contract ConfidentialERC20 {
         euint64 minted = TFHE.asEuint64(amount);
         _balances[to] = TFHE.add(_ensure(to), minted);
         _grantRead(_balances[to], to);
-
+        _record(_balances[to], to);
         _totalSupplyPlain += amount;
         _totalSupply = TFHE.asEuint64(_totalSupplyPlain);
 
@@ -166,6 +183,10 @@ contract ConfidentialERC20 {
         // neither learns the other's balance.
         _grantRead(actual, from);
         _grantRead(actual, to);
+        _record(_balances[from], from);
+        _record(_balances[to], to);
+        // The recipient may forward what they received.
+        _record(actual, to);
 
         // Fires unconditionally, including when `actual`
         // is an encrypted zero — the EIP requires
@@ -185,7 +206,18 @@ contract ConfidentialERC20 {
             h = TFHE.asEuint64(0);
             _balances[account] = h;
         }
+        _record(h, account);
         return h;
+    }
+
+    /// First write wins, mirroring the precompile's own
+    /// registration semantics. Re-recording would let a
+    /// later path silently reassign a handle's claimant.
+    function _record(euint64 h, address account) private {
+        bytes32 raw = euint64.unwrap(h);
+        if (_issuedTo[raw] == address(0)) {
+            _issuedTo[raw] = account;
+        }
     }
 
     function _grantRead(euint64 handle, address account) private {
