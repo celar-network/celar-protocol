@@ -14,6 +14,7 @@
 //! - the transcript commits to shares (hashes), it never contains them.
 
 pub mod acl;
+pub mod authz;
 pub mod committee;
 pub mod config;
 pub mod dkg;
