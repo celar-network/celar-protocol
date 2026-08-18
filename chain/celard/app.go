@@ -92,6 +92,7 @@ import (
 	authsims "github.com/cosmos/cosmos-sdk/x/auth/simulation"
 	authtx "github.com/cosmos/cosmos-sdk/x/auth/tx"
 	txmodule "github.com/cosmos/cosmos-sdk/x/auth/tx/config"
+	authante "github.com/cosmos/cosmos-sdk/x/auth/ante"
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 	"github.com/cosmos/cosmos-sdk/x/auth/vesting"
 	vestingtypes "github.com/cosmos/cosmos-sdk/x/auth/vesting/types"
@@ -836,6 +837,23 @@ func (app *EVMD) setAnteHandler(txConfig client.TxConfig, maxGasWanted uint64) {
 	if err := options.Validate(); err != nil {
 		panic(err)
 	}
+
+	// Fee routing must not depend on initialisation order.
+	//
+	// The SDK sends deducted fees to ante.FeeRecipientModule, a
+	// package-level variable that is empty until something constructs
+	// the Cosmos fee decorator — which sets it as a side effect. But
+	// NewAnteHandler builds its chain per transaction: an Ethereum
+	// transaction takes the EVM branch, which never constructs that
+	// decorator and reads the variable directly. So on a node whose
+	// first transaction is an Ethereum one, fees are sent to the module
+	// named "" and the bank keeper panics.
+	//
+	// A live validator hides this, because Cosmos transactions flow from
+	// genesis and set the variable long before any EVM traffic arrives.
+	// That is luck, not design, and it is not a property to rely on for
+	// the code that decides where fees go.
+	authante.FeeRecipientModule = authtypes.FeeCollectorName
 
 	app.SetAnteHandler(evmante.NewAnteHandler(options))
 }
