@@ -1,9 +1,10 @@
 //go:build test
 
-package integration
+package token
 
 import (
 	"encoding/json"
+	"github.com/cosmos/evm/evmd/tests/integration"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -75,7 +76,7 @@ func TestDeployConfidentialERC20(t *testing.T) {
 	parsed, code := loadArtifact(t)
 
 	creator := testapp.ToEvmAppCreator[evm.VMIntegrationApp](
-		CreateEvmd, "evm.VMIntegrationApp")
+		integration.CreateEvmd, "evm.VMIntegrationApp")
 
 	keys := keyring.New(2)
 

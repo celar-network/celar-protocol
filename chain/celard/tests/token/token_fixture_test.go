@@ -1,6 +1,6 @@
 //go:build test
 
-package integration
+package token
 
 import (
 	"math/big"
@@ -11,6 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 
 	evm "github.com/cosmos/evm"
+	"github.com/cosmos/evm/evmd/tests/integration"
 	testapp "github.com/cosmos/evm/testutil/app"
 	"github.com/cosmos/evm/testutil/integration/evm/network"
 	"github.com/cosmos/evm/testutil/keyring"
@@ -42,7 +43,7 @@ func deployToken(t *testing.T) *tokenFixture {
 	parsed, code := loadArtifact(t)
 
 	creator := testapp.ToEvmAppCreator[evm.VMIntegrationApp](
-		CreateEvmd, "evm.VMIntegrationApp")
+		integration.CreateEvmd, "evm.VMIntegrationApp")
 
 	keys := keyring.New(2)
 

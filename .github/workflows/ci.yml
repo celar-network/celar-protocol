@@ -46,18 +46,15 @@ jobs:
 
       - name: test the confidential token
         working-directory: chain/celard
-        # Named rather than running ./tests/integration/... wholesale:
-        # that package also holds inherited upstream suites which fail
-        # for reasons unrelated to Celar — Ledger needs hardware, and
-        # the ERC20 keeper family asserts 18-decimal behaviour against a
-        # 9-decimal chain. An always-red workflow teaches everyone to
-        # ignore it, which is worse than a narrow green one.
-        #
-        # Cost of naming them: a test not listed here never runs in CI.
-        # Fixing or retiring the inherited suites removes that cost.
-        run: |
-          go test -tags=test ./tests/integration/ -run \
-            'ConfidentialERC20|SelfTransfer|CannotTransfer|TransferToZero|DoesNotClaim|TotalSupply|SharedZero|ExternalAdmission|EmptyProof|RecipientCanForward|TransferEvent'
+        # Our tests have their own package. The inherited upstream
+        # suites in tests/integration fail for reasons unrelated to
+        # this chain — one needs Ledger hardware, another asserts
+        # eighteen-decimal behaviour against a nine-decimal chain — so
+        # they cannot be run wholesale. Naming ours individually was
+        # the first answer, but a test omitted from that list still
+        # passed locally and silently never ran here. A separate
+        # package makes inclusion automatic.
+        run: go test -tags=test ./tests/token/...
 
   rust:
     name: fhe backend (rust)

@@ -1,6 +1,6 @@
 //go:build test
 
-package integration
+package token
 
 import (
 	"testing"
