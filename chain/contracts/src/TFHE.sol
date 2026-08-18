@@ -6,12 +6,15 @@ pragma solidity ^0.8.28;
 /// off-chain. The distinct Solidity type stops an
 /// encrypted boolean being used where a number is meant.
 ///
-/// The type tag is recorded at registration but NOT
-/// validated anywhere in the precompile — resultKType and
-/// operandKType only propagate it. So this barrier is
-/// Solidity-side only, and euint64.wrap() erases it
-/// entirely. Enforcement is a precompile task, not a
-/// property to rely on today.
+/// Where the distinction is and is not enforced, since
+/// this was stated wrongly twice: the tag is recorded at
+/// registration and NOT validated by the precompile —
+/// resultKType and operandKType only propagate it — so
+/// mixed-type operands pass on-chain. The Rust backend
+/// DOES reject them (test: type_confusion_is_rejected),
+/// so a mismatch is caught off-chain during execution
+/// rather than at admission. On-chain, euint64.wrap()
+/// erases the barrier entirely.
 type euint64 is bytes32;
 
 /// @dev Encrypted boolean, produced by comparisons and boolean
