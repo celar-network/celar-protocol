@@ -57,7 +57,7 @@ jobs:
         # Fixing or retiring the inherited suites removes that cost.
         run: |
           go test -tags=test ./tests/integration/ -run \
-            'ConfidentialERC20|SelfTransfer|CannotTransfer|TransferToZero|DoesNotClaim|TotalSupply|SharedZero|ExternalAdmission|EmptyProof|RecipientCanForward'
+            'ConfidentialERC20|SelfTransfer|CannotTransfer|TransferToZero|DoesNotClaim|TotalSupply|SharedZero|ExternalAdmission|EmptyProof|RecipientCanForward|TransferEvent'
 
   rust:
     name: fhe backend (rust)

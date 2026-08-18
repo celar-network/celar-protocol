@@ -20,6 +20,7 @@ import (
 
 	storetypes "github.com/cosmos/cosmos-sdk/store/v2/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	evmtypes "github.com/cosmos/evm/x/vm/types"
 )
 
 // Shared fixture: an initialised network with the FHE
@@ -179,4 +180,26 @@ func (f *tokenFixture) refresh(t *testing.T) {
 		storetypes.NewInfiniteGasMeter())
 	f.db = statedb.New(
 		f.ctx, f.k, statedb.NewEmptyTxConfig())
+}
+
+// send discards the response; event assertions need it.
+func (f *tokenFixture) sendCollectingLogs(
+	t *testing.T,
+	caller common.Address,
+	method string,
+	args ...interface{},
+) []*evmtypes.Log {
+	t.Helper()
+	data, err := f.abi.Pack(method, args...)
+	if err != nil {
+		t.Fatalf("pack %s: %v", method, err)
+	}
+	res, err := f.k.CallEVMWithData(
+		f.ctx, f.db, caller, &f.addr, data,
+		true, false, big.NewInt(10_000_000),
+	)
+	if err != nil {
+		t.Fatalf("call %s: %v", method, err)
+	}
+	return res.Logs
 }
