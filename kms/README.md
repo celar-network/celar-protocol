@@ -18,7 +18,25 @@ see the comment in `Cargo.toml`.
 | **B1 DKG** — local n-party + real MPC offline phase (`--preproc secure`) + gRPC/mTLS ceremony (`celar-kms-node`, one process per member) | 🟡 code-complete; awaits 𝒫_FHE params, genesis-scale run, §7.1 quorum-mapping decision |
 | **B5 resharing** — epoch-chained `reshare.json`, pk_G invariant, recovery via `--drop-role` | 🟡 local milestone; secure dual-ring offline + ceremony mode pending |
 | **B6 committee mode** — §7.7 vetted roster, CA-cert pinning, roster digest through fragments → transcript | 🟡 rules enforced + unit-tested at genesis scale; genesis-scale ceremony pending |
-| **G10 ACL verify** — `celar-acl-verify`: ICS23 (AppHash(H+1) ⊢ `evm` store ⊢ IAVL) + reference MPT path | spike verified live; §4.1 owner decision pending |
+| **G10 ACL verify** — `celar-acl-verify`: ICS23 (AppHash(H+1) ⊢ `evm` store ⊢ IAVL) + reference MPT path | **ICS23 ratified (§4.1, 2026-08-16)** — the production read path; `mpt.rs` is the oracle |
+
+## The AppHash trust boundary (E9 — B4 precondition; spec W20: MUST)
+
+An ICS23 chain is only as trustworthy as its root. A caller-supplied AppHash
+(RPC response, file, flag) relocates the committee's trust to whoever served
+it — so `header_trust.rs` makes the boundary mechanical:
+
+- `AppHashSource::LightClientVerified` — the **only** source the KMS trust
+  path accepts. Constructed from headers verified by a Tendermint light
+  client (trusted checkpoint + validator-set signatures); the KMS service
+  (B2+) wires the actual light client into this seam.
+- `AppHashSource::UnverifiedCallerSupplied` — what `--header`/`--app-hash`
+  produce. **Refused by default.** Dev/test flows opt in with
+  `--allow-unverified-header`, and the verdict is permanently tainted
+  (`root=UNVERIFIED-DEV (not a trusted verdict)`).
+- B4's authorization predicate takes an `AdmittedAppHash`, never a raw hash —
+  the type system is the enforcement. Refusal on an unverifiable root is the
+  same posture as the G10 ACL refusal property.
 
 Transcripts are public artifacts: config, upstream pin, pk_G digest,
 per-party share **commitments** — never shares. `--write-dev-keys` runs are

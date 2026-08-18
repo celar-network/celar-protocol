@@ -3,8 +3,13 @@
 //!
 //!   celar-acl-verify slots  --handle 0x… --grantee 0x…
 //!   celar-acl-verify verify --proof proof.json --header header.json \
-//!                           [--block block.json] \
+//!                           --allow-unverified-header [--block block.json] \
 //!                           --handle 0x… --grantee 0x… --perm reencrypt-to-self
+//!
+//! E9 TRUST BOUNDARY: --header/--app-hash roots are caller-supplied and NOT
+//! light-client-verified — REFUSED by default; the dev flag admits them and
+//! taints the verdict (`root=UNVERIFIED-DEV`). The KMS trust path only
+//! accepts `AppHashSource::LightClientVerified` (see `header_trust`).
 //!
 //! `proof.json`  = eth_getProof response for the precompile account with the
 //!                 two slots printed by `slots`, fetched at EVM block H
@@ -31,6 +36,7 @@ use serde_json::Value;
 use celar_kms::acl::{
     acl_slot, decode_meta, has_perm, meta_slot, perm_bit, FHE_PRECOMPILE_ADDRESS,
 };
+use celar_kms::header_trust::{AppHashSource, TrustPolicy};
 use celar_kms::ics23_verify::{self, SlotOutcome};
 use celar_kms::mpt::{keccak256, storage_word, verify_proof, ProofOutcome};
 
@@ -64,6 +70,11 @@ enum Cmd {
         /// AppHash as raw hex (alternative to --header).
         #[arg(long)]
         app_hash: Option<String>,
+        /// E9 trust boundary: --header/--app-hash roots are caller-supplied
+        /// and NOT light-client-verified, so they are REFUSED by default.
+        /// This dev/test opt-in admits them — and taints the verdict.
+        #[arg(long, default_value_t = false)]
+        allow_unverified_header: bool,
         /// mpt | ics23 (default: auto-detect from proof bytes).
         #[arg(long)]
         format: Option<String>,
@@ -94,6 +105,7 @@ fn main() -> Result<()> {
             proof,
             header,
             app_hash,
+            allow_unverified_header,
             format,
             handle,
             grantee,
@@ -104,6 +116,7 @@ fn main() -> Result<()> {
             proof,
             header,
             app_hash,
+            allow_unverified_header,
             format,
             handle,
             grantee,
@@ -118,6 +131,7 @@ struct VerifyArgs {
     proof: PathBuf,
     header: Option<PathBuf>,
     app_hash: Option<String>,
+    allow_unverified_header: bool,
     format: Option<String>,
     handle: String,
     grantee: String,
@@ -219,7 +233,10 @@ fn verify_ics23(
     h: &[u8; 32],
     g: &[u8; 20],
 ) -> Result<(Option<[u8; 32]>, Option<[u8; 32]>, String)> {
-    // Trusted root: AppHash, from --app-hash or a CometBFT header file.
+    // Root candidate: AppHash, from --app-hash or a CometBFT header file.
+    // Both are CALLER-SUPPLIED, i.e. unverified — the E9 gate below decides
+    // whether that is acceptable. A light-client-verified source would enter
+    // here as AppHashSource::LightClientVerified (KMS service, B2+).
     let (app_hash, header_height) = match (&args.app_hash, &args.header) {
         (Some(hexstr), _) => (parse_hex::<32>(hexstr).context("--app-hash")?, None),
         (None, Some(path)) => {
@@ -238,6 +255,16 @@ fn verify_ics23(
              EVM block the proof was fetched at) or --app-hash 0x…"
         ),
     };
+
+    // E9 trust boundary: refuse unverified roots unless the dev flag opted in.
+    let admitted = TrustPolicy {
+        allow_unverified: args.allow_unverified_header,
+    }
+    .admit(AppHashSource::UnverifiedCallerSupplied {
+        app_hash,
+        height: header_height,
+    })?;
+    let app_hash = admitted.app_hash;
 
     // Optional height sanity check: header must be at EVM block height + 1.
     if let (Some(block_path), Some(hh)) = (&args.block, header_height) {
@@ -259,11 +286,12 @@ fn verify_ics23(
     let meta = expect_slot_ics23(proof, &app_hash, &meta_slot(h)).context("handleMeta[h]")?;
     let aclw = expect_slot_ics23(proof, &app_hash, &acl_slot(h, g)).context("acl[h][grantee]")?;
     let desc = format!(
-        "format=ics23 appHash=0x{}{}",
+        "format=ics23 appHash=0x{}{}{}",
         hex::encode(app_hash),
         header_height
             .map(|hh| format!(" header_height={hh}"))
-            .unwrap_or_default()
+            .unwrap_or_default(),
+        admitted.taint_label(),
     );
     Ok((meta, aclw, desc))
 }

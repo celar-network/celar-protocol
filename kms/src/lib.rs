@@ -17,6 +17,7 @@ pub mod acl;
 pub mod committee;
 pub mod config;
 pub mod dkg;
+pub mod header_trust;
 pub mod ics23_verify;
 pub mod mpt;
 pub mod node;
