@@ -18,6 +18,7 @@ pub mod authz;
 pub mod committee;
 pub mod config;
 pub mod dkg;
+pub mod fraud;
 pub mod header_trust;
 pub mod ics23_verify;
 pub mod mpt;
