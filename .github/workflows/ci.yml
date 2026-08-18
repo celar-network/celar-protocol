@@ -23,14 +23,41 @@ jobs:
         with:
           go-version: '1.26'
           cache-dependency-path: chain/celard/go.sum
+      - uses: foundry-rs/foundry-toolchain@v1
+
       - name: build everything
         working-directory: chain/celard
         run: go build ./...
+
+      - name: build contracts
+        # The token's integration tests load the compiled artifact from
+        # forge output, which is gitignored. Without this they skip
+        # locally and fail here — deliberately: a silently skipped test
+        # is indistinguishable from a passing one, and this is the only
+        # thing exercising the token.
+        working-directory: chain/contracts
+        run: forge build
+
       - name: test our packages
         working-directory: chain/celard
         # -tags=test is required: the upstream test config helpers are gated
         # behind it and panic without it
         run: go test -tags=test ./precompiles/... ./precisebank/...
+
+      - name: test the confidential token
+        working-directory: chain/celard
+        # Named rather than running ./tests/integration/... wholesale:
+        # that package also holds inherited upstream suites which fail
+        # for reasons unrelated to Celar — Ledger needs hardware, and
+        # the ERC20 keeper family asserts 18-decimal behaviour against a
+        # 9-decimal chain. An always-red workflow teaches everyone to
+        # ignore it, which is worse than a narrow green one.
+        #
+        # Cost of naming them: a test not listed here never runs in CI.
+        # Fixing or retiring the inherited suites removes that cost.
+        run: |
+          go test -tags=test ./tests/integration/ -run \
+            'ConfidentialERC20|SelfTransfer|CannotTransfer|TransferToZero|DoesNotClaim|TotalSupply|SharedZero|ExternalAdmission|EmptyProof|RecipientCanForward'
 
   rust:
     name: fhe backend (rust)
