@@ -23,14 +23,38 @@ jobs:
         with:
           go-version: '1.26'
           cache-dependency-path: chain/celard/go.sum
+      - uses: foundry-rs/foundry-toolchain@v1
+
       - name: build everything
         working-directory: chain/celard
         run: go build ./...
+
+      - name: build contracts
+        # The token's integration tests load the compiled artifact from
+        # forge output, which is gitignored. Without this they skip
+        # locally and fail here — deliberately: a silently skipped test
+        # is indistinguishable from a passing one, and this is the only
+        # thing exercising the token.
+        working-directory: chain/contracts
+        run: forge build
+
       - name: test our packages
         working-directory: chain/celard
         # -tags=test is required: the upstream test config helpers are gated
         # behind it and panic without it
         run: go test -tags=test ./precompiles/... ./precisebank/...
+
+      - name: test the confidential token
+        working-directory: chain/celard
+        # Our tests have their own package. The inherited upstream
+        # suites in tests/integration fail for reasons unrelated to
+        # this chain — one needs Ledger hardware, another asserts
+        # eighteen-decimal behaviour against a nine-decimal chain — so
+        # they cannot be run wholesale. Naming ours individually was
+        # the first answer, but a test omitted from that list still
+        # passed locally and silently never ran here. A separate
+        # package makes inclusion automatic.
+        run: go test -tags=test ./tests/token/...
 
   rust:
     name: fhe backend (rust)
