@@ -40,7 +40,7 @@ use threshold_execution::tests::helper::tests_and_benches::{
     execute_protocol_large, execute_protocol_small,
 };
 use threshold_execution::tfhe_internals::parameters::{
-    DKGParams, DKGParamsBasics, NIST_PARAMS_P32_SNS_FGLWE, PARAMS_TEST_BK_SNS,
+    DKGParams, NIST_PARAMS_P32_SNS_FGLWE, PARAMS_TEST_BK_SNS,
 };
 use threshold_execution::tfhe_internals::private_keysets::PrivateKeySet;
 use threshold_execution::tfhe_internals::public_keysets::FhePubKeySet;
@@ -116,10 +116,11 @@ async fn run_parties_dummy(cfg: &CommitteeConfig) -> Vec<PartyResult> {
 async fn run_parties_secure(cfg: &CommitteeConfig) -> Vec<PartyResult> {
     let params = dkg_params(cfg.params);
     let keyset_config = KeySetConfig::default();
-    let params_handle = params.get_params_basics_handle();
+    // (0.13.22 → main: the DKGParamsBasics handle trait is gone; the
+    // accounting methods are inherent on DKGParams now.)
     let batch = BatchParams {
-        triples: params_handle.total_triples_required(keyset_config),
-        randoms: params_handle.total_randomness_required(keyset_config),
+        triples: params.total_triples_required(keyset_config),
+        randoms: params.total_randomness_required(keyset_config),
     };
     let tag_bytes = cfg.tag.clone().into_bytes();
 

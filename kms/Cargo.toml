@@ -1,15 +1,15 @@
-# Celar threshold KMS — Track B (B1: DKG, genesis/permissioned mode first).
+# Celar threshold KMS — Track B.
 #
-# Upstream: zama-ai/kms pinned at tag v0.13.22 (git dep — portable, no local
-# clone required; mirrors how celard pins cosmos/evm). The threshold protocol
-# implementation lives in the `threshold-execution` crate there (the docs'
-# `core/threshold` path is stale — restructure reported in the build-state note).
-#
-# NOTE (version skew, flagged): this workspace pins tfhe =1.6.1 because the kms
-# stack does; Track A's backend adapter (`fhe/backend-adapter/zama`) is on
-# tfhe 1.7.0. Separate build trees, so no conflict today — but ciphertext-format
-# compatibility between the coprocessor and the KMS must be reconciled before
-# B2 (threshold decryption of Track A ciphertexts).
+# Upstream: zama-ai/kms pinned at main@c6b0fdd3 (git rev — portable,
+# reproducible; mirrors how celard pins cosmos/evm). Pin history:
+#   tag v0.13.22 (tfhe =1.6.1) → main@c6b0fdd3 on 2026-08-16 (B2-M0):
+#   upstream main crossed to tfhe =1.7.0, which ALIGNS the KMS with Track A's
+#   backend adapter (`fhe/backend-adapter/zama`, tfhe 1.7.0) — threshold
+#   decryption (B2) consumes coprocessor ciphertexts with no cross-version
+#   serialization bridge. Re-pin to the next upstream RELEASE tag once one
+#   ships with tfhe 1.7.x.
+# The threshold protocol implementation lives in the `threshold-execution`
+# crate there (the docs' `core/threshold` path is stale — see build-state note).
 [package]
 name = "celar-kms"
 version = "0.1.0"
@@ -21,17 +21,21 @@ name = "celar-dkg"
 path = "src/bin/celar_dkg.rs"
 
 [dependencies]
-threshold-execution = { git = "https://github.com/zama-ai/kms.git", tag = "v0.13.22", features = ["testing"] }
-threshold-networking = { git = "https://github.com/zama-ai/kms.git", tag = "v0.13.22" }
-threshold-types = { git = "https://github.com/zama-ai/kms.git", tag = "v0.13.22" }
-algebra = { package = "threshold-algebra", git = "https://github.com/zama-ai/kms.git", tag = "v0.13.22", default-features = false, features = ["extension_degree_4"] }
+threshold-execution = { git = "https://github.com/zama-ai/kms.git", rev = "c6b0fdd39e37ceb68edfae86d521c39dc0d50d46", features = ["testing"] }
+threshold-networking = { git = "https://github.com/zama-ai/kms.git", rev = "c6b0fdd39e37ceb68edfae86d521c39dc0d50d46" }
+threshold-types = { git = "https://github.com/zama-ai/kms.git", rev = "c6b0fdd39e37ceb68edfae86d521c39dc0d50d46" }
+# NOTE (0.13.22 → main): threshold-algebra dropped its [features] section
+# entirely at this rev — extension degrees are now unconditional, so the old
+# `extension_degree_4` feature (and default-features = false) must go.
+algebra = { package = "threshold-algebra", git = "https://github.com/zama-ai/kms.git", rev = "c6b0fdd39e37ceb68edfae86d521c39dc0d50d46" }
 
 # Must match the kms workspace pins exactly — these types cross the API
 # boundary (tfhe::Tag; tonic/rustls types into GrpcNetworkingManager).
-tfhe = "=1.6.1"
-tonic = "=0.14.5"
-tokio-rustls = { version = "=0.26.2", default-features = false, features = ["aws_lc_rs"] }
-x509-parser = { version = "=0.18.0", features = ["verify-aws"] }
+# Matched against main@c6b0fdd3.
+tfhe = "=1.7.0"
+tonic = "=0.14.6"
+tokio-rustls = { version = "=0.26.4", default-features = false, features = ["aws_lc_rs"] }
+x509-parser = { version = "=0.18.1", features = ["verify-aws"] }
 aes-prng = "=0.2.1"
 
 anyhow = "1"
@@ -57,10 +61,11 @@ opt-level = 3
 # Upstream zama-ai/kms builds rcgen (and friends) from Zama forks via
 # [patch.crates-io] in *their* workspace root. Cargo patches don't propagate
 # through git dependencies, so we must mirror them here. Without the rcgen
-# patch, crates.io rcgen 0.14.7 + x509-parser 0.18.0 fails to compile
-# (E0599: verify_signature not found — CSR verify not gated for verify-aws).
+# patch, crates.io rcgen + x509-parser fails to compile (E0599:
+# verify_signature not found — CSR verify not gated for verify-aws).
+# Mirrored from main@c6b0fdd3 (attestation-doc-validation patch was dropped
+# upstream between v0.13.22 and main — dropped here to match).
 [patch.crates-io]
 rcgen = { git = "https://github.com/zama-ai/rcgen.git" }
 rustls = { git = "https://github.com/zama-ai/rustls.git", branch = "rel-0.23" }
 rustls-webpki = { git = "https://github.com/zama-ai/webpki.git", branch = "rel-0.103" }
-attestation-doc-validation = { git = "https://github.com/mkmks/attestation-doc-validation.git", branch = "timestamps" }

@@ -50,7 +50,6 @@ use threshold_execution::online::preprocessing::RandomPreprocessing;
 use threshold_execution::sharing::open::{RobustOpen, SecureRobustOpen};
 use threshold_execution::small_execution::offline::{Preprocessing, SecureSmallPreprocessing};
 use threshold_execution::small_execution::prss::{DerivePRSSState, PRSSInit, RobustSecurePrssInit};
-use threshold_execution::tfhe_internals::parameters::DKGParamsBasics;
 use threshold_networking::grpc::{GrpcNetworkingManager, TlsExtensionGetter};
 use threshold_types::network::NetworkMode;
 use threshold_types::party::{Identity, RoleAssignment};
@@ -317,8 +316,14 @@ pub async fn run_ceremony(cfg: &NodeConfig) -> Result<TranscriptFragment> {
     let sid = SessionId::from(cfg.session_id as u128);
 
     // 1) mTLS networking: server for inbound, manager for outbound.
+    // (0.13.22 → main: `new` now takes (tls, CoreToCoreNetworkConfig); the
+    // testing-only force_tls bool is gone. Default() = all-None fields, every
+    // accessor falls back to upstream constants — same as the old None.)
     let client_tls = build_client_tls(&cfg.tls)?;
-    let manager = Arc::new(GrpcNetworkingManager::new(Some(client_tls), None, false)?);
+    let manager = Arc::new(GrpcNetworkingManager::new(
+        Some(client_tls),
+        threshold_networking::grpc::CoreToCoreNetworkConfig::default(),
+    )?);
     let mpc_service = manager.new_server(TlsExtensionGetter::TlsConnectInfo);
 
     let bind = format!("{}:{}", cfg.listen_addr, cfg.my_peer().port);
@@ -401,13 +406,13 @@ pub async fn run_ceremony(cfg: &NodeConfig) -> Result<TranscriptFragment> {
         }
     };
     let keyset_config = KeySetConfig::default();
-    let handle = params_dkg.get_params_basics_handle();
+    // (0.13.22 → main: DKGParamsBasics handle gone; methods inherent.)
     let batch = BatchParams {
-        triples: handle.total_triples_required(keyset_config),
+        triples: params_dkg.total_triples_required(keyset_config),
         // +2 spare randoms: consumed by the divergence CANARIES below (one
         // opened in the sync session, one in the async session). The fill
         // consumes by count, so identical popping on all nodes stays aligned.
-        randoms: handle.total_randomness_required(keyset_config) + 2,
+        randoms: params_dkg.total_randomness_required(keyset_config) + 2,
     };
 
     session

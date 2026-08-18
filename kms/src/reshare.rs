@@ -267,7 +267,9 @@ pub async fn run_local_reshare(
             // produce "shares" of nothing consistent and robust opening fails.
             // It is epoch-unique by derivation (see run_local_reshare) or the
             // reshare would be idempotent. This is dev-only.
-            let required = ResharePreprocRequired::new(session.num_parties(), params);
+            // (0.13.22 → main: new `oprf_key_present` flag — false for our
+            // keysets, which predate dedicated OPRF keys.)
+            let required = ResharePreprocRequired::new(session.num_parties(), params, false);
             let mut dummy = DummyPreprocessing::new(dummy_seed, &session);
             let mut preproc_128: InMemoryBasePreprocessing<ResiduePoly<Z128, EXTENSION_DEGREE>> =
                 InMemoryBasePreprocessing {
@@ -296,6 +298,8 @@ pub async fn run_local_reshare(
                 &mut preproc_64,
                 &mut contribution,
                 params,
+                // oprf_key_present: our keysets have no dedicated OPRF key.
+                false,
             )
             .await
             .expect("reshare protocol failed");

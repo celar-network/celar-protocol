@@ -30,6 +30,8 @@ pub mod transcript;
 /// `extension_degree_4`).
 pub const EXTENSION_DEGREE: usize = 4;
 
-/// The upstream pin, recorded into every transcript.
+/// The upstream pin, recorded into every transcript. Pin history:
+/// v0.13.22 (tfhe 1.6.1) → main@c6b0fdd3 (tfhe 1.7.0, aligns with Track A's
+/// backend for B2). Re-pin to the next release tag when one ships on 1.7.x.
 pub const UPSTREAM_REPO: &str = "https://github.com/zama-ai/kms";
-pub const UPSTREAM_TAG: &str = "v0.13.22";
+pub const UPSTREAM_TAG: &str = "main@c6b0fdd39e37ceb68edfae86d521c39dc0d50d46";
