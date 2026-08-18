@@ -49,9 +49,13 @@ done
 for i in $(seq 0 $((N - 1))); do
   H="$ROOT/node$i"
   O=$((i * 100))
+  # The addresses are offset above, but app.toml ships with the
+  # JSON-RPC server disabled, so without this flag nothing binds and
+  # every eth_* call silently fails to connect.
   nohup $BIN start --home "$H" \
     --chain-id "$CHAIN_ID" \
     --minimum-gas-prices 0ncelar \
+    --json-rpc.enable \
     > "$H/node.log" 2>&1 &
   echo "node$i pid $! : rpc $((26657 + O)) p2p $((26656 + O)) json-rpc $((8545 + O))"
 done
