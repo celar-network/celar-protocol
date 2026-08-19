@@ -43,9 +43,7 @@ use threshold_execution::runtime::sessions::base_session::{
     BaseSession, GenericBaseSessionHandles, ToBaseSession,
 };
 use threshold_execution::runtime::sessions::small_session::SmallSession;
-use threshold_execution::runtime::sessions::session_parameters::{
-    GenericParameterHandles, SessionParameters,
-};
+use threshold_execution::runtime::sessions::session_parameters::SessionParameters;
 use threshold_execution::online::preprocessing::RandomPreprocessing;
 use threshold_execution::sharing::open::{RobustOpen, SecureRobustOpen};
 use threshold_execution::small_execution::offline::{Preprocessing, SecureSmallPreprocessing};
