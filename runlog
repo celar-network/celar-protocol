@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# runlog — run any command and record its full output for later debugging.
+# Usage: runlog <command> [args...]
+# Logs land in <repo>/.runlog/, newest also linked as .runlog/last.log
+set -uo pipefail
+
+LOG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.runlog"
+mkdir -p "$LOG_DIR"
+TS=$(date +%Y%m%d-%H%M%S)
+LOG="$LOG_DIR/run-$TS.log"
+
+{
+  echo "# cmd:     $*"
+  echo "# cwd:     $PWD"
+  echo "# started: $(date -Is)"
+  echo "# ----------------------------------------"
+} > "$LOG"
+
+env "$@" 2>&1 | tee -a "$LOG"
+CODE=${PIPESTATUS[0]}
+
+{
+  echo "# ----------------------------------------"
+  echo "# exit:     $CODE"
+  echo "# finished: $(date -Is)"
+} >> "$LOG"
+
+ln -sf "$LOG" "$LOG_DIR/last.log"
+
+# keep only the 20 most recent logs
+ls -1t "$LOG_DIR"/run-*.log 2>/dev/null | tail -n +21 | xargs -r rm -f
+
+exit "$CODE"

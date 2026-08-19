@@ -1,0 +1,71 @@
+# Celar threshold KMS — Track B.
+#
+# Upstream: zama-ai/kms pinned at main@c6b0fdd3 (git rev — portable,
+# reproducible; mirrors how celard pins cosmos/evm). Pin history:
+#   tag v0.13.22 (tfhe =1.6.1) → main@c6b0fdd3 on 2026-08-16 (B2-M0):
+#   upstream main crossed to tfhe =1.7.0, which ALIGNS the KMS with Track A's
+#   backend adapter (`fhe/backend-adapter/zama`, tfhe 1.7.0) — threshold
+#   decryption (B2) consumes coprocessor ciphertexts with no cross-version
+#   serialization bridge. Re-pin to the next upstream RELEASE tag once one
+#   ships with tfhe 1.7.x.
+# The threshold protocol implementation lives in the `threshold-execution`
+# crate there (the docs' `core/threshold` path is stale — see build-state note).
+[package]
+name = "celar-kms"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "celar-dkg"
+path = "src/bin/celar_dkg.rs"
+
+[dependencies]
+threshold-execution = { git = "https://github.com/zama-ai/kms.git", rev = "c6b0fdd39e37ceb68edfae86d521c39dc0d50d46", features = ["testing"] }
+threshold-networking = { git = "https://github.com/zama-ai/kms.git", rev = "c6b0fdd39e37ceb68edfae86d521c39dc0d50d46" }
+threshold-types = { git = "https://github.com/zama-ai/kms.git", rev = "c6b0fdd39e37ceb68edfae86d521c39dc0d50d46" }
+# NOTE (0.13.22 → main): threshold-algebra dropped its [features] section
+# entirely at this rev — extension degrees are now unconditional, so the old
+# `extension_degree_4` feature (and default-features = false) must go.
+algebra = { package = "threshold-algebra", git = "https://github.com/zama-ai/kms.git", rev = "c6b0fdd39e37ceb68edfae86d521c39dc0d50d46" }
+
+# Must match the kms workspace pins exactly — these types cross the API
+# boundary (tfhe::Tag; tonic/rustls types into GrpcNetworkingManager).
+# Matched against main@c6b0fdd3.
+tfhe = "=1.7.0"
+tonic = "=0.14.6"
+tokio-rustls = { version = "=0.26.4", default-features = false, features = ["aws_lc_rs"] }
+x509-parser = { version = "=0.18.1", features = ["verify-aws"] }
+aes-prng = "=0.2.1"
+
+anyhow = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+bincode = "1.3"
+# G10 ICS23 path: cosmos/evm eth_getProof returns ics23 (IAVL + multistore)
+# proofs, not MPT nodes — verified against the Tendermint AppHash.
+ics23 = "0.12"
+prost = "0.13"
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+rlp = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sha3 = "0.10"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[profile.release]
+# FHE/MPC in debug mode is unusable (~100x); always build/run --release.
+opt-level = 3
+
+# Upstream zama-ai/kms builds rcgen (and friends) from Zama forks via
+# [patch.crates-io] in *their* workspace root. Cargo patches don't propagate
+# through git dependencies, so we must mirror them here. Without the rcgen
+# patch, crates.io rcgen + x509-parser fails to compile (E0599:
+# verify_signature not found — CSR verify not gated for verify-aws).
+# Mirrored from main@c6b0fdd3 (attestation-doc-validation patch was dropped
+# upstream between v0.13.22 and main — dropped here to match).
+[patch.crates-io]
+rcgen = { git = "https://github.com/zama-ai/rcgen.git" }
+rustls = { git = "https://github.com/zama-ai/rustls.git", branch = "rel-0.23" }
+rustls-webpki = { git = "https://github.com/zama-ai/webpki.git", branch = "rel-0.103" }
