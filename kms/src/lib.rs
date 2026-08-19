@@ -17,6 +17,7 @@ pub mod acl;
 pub mod authz;
 pub mod committee;
 pub mod config;
+pub mod decrypt;
 pub mod dkg;
 pub mod fraud;
 pub mod header_trust;

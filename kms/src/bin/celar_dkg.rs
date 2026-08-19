@@ -65,6 +65,22 @@ enum Cmd {
         #[arg(long)]
         drop_role: Option<usize>,
     },
+    /// B2: n-party noise-flooded threshold decryption of a fixture value
+    /// encrypted under the DKG's pk_G. --shares-dir may point at a LATER
+    /// epoch (B5 functional proof: reshared shares decrypt the same pk_G).
+    Decrypt {
+        /// Directory with transcript.json + pk_g.bin (genesis DKG output).
+        #[arg(long)]
+        keys_dir: PathBuf,
+        /// Directory with the party share files (default: keys-dir).
+        #[arg(long)]
+        shares_dir: Option<PathBuf>,
+        /// Fixture plaintext to encrypt and threshold-decrypt.
+        #[arg(long, default_value_t = 42)]
+        value: u64,
+        #[arg(long, default_value = "decrypt-report.json")]
+        out: PathBuf,
+    },
     /// Verify a reshare transcript against its predecessor (+ keys dir).
     VerifyReshare {
         #[arg(long)]
@@ -172,6 +188,31 @@ async fn main() -> Result<()> {
                 outcome.transcript.wall_secs,
                 outcome.transcript.pk_g_sha256,
                 out.join("reshare.json").display(),
+            );
+            Ok(())
+        }
+        Cmd::Decrypt {
+            keys_dir,
+            shares_dir,
+            value,
+            out,
+        } => {
+            let shares = shares_dir.clone().unwrap_or_else(|| keys_dir.clone());
+            eprintln!(
+                "celar-dkg: threshold decrypt (NoiseFloodSmall) — pk from {}, shares from {}",
+                keys_dir.display(),
+                shares.display()
+            );
+            let outcome =
+                celar_kms::decrypt::run_local_threshold_decrypt(&keys_dir, &shares, value, &out)
+                    .await?;
+            println!(
+                "DECRYPT-OK mode={} parties={} value={} ALL-AGREE wall={:.1}s report {}",
+                outcome.report.mode,
+                outcome.report.parties,
+                value,
+                outcome.report.wall_secs,
+                out.display()
             );
             Ok(())
         }
