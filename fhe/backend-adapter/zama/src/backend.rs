@@ -155,7 +155,7 @@ impl Backend {
         let ct = !self.boolean(a)?;
         Ok(self.put(Ct::Bool(ct)))
     }
-
+    
     // ---- the branchless primitive ---------------------------------------
 
     /// The only path an encrypted pedicated may flow into. Both branches are
@@ -205,6 +205,29 @@ impl Backend {
     pub fn serialize_handle(&self, h: Handle) -> Res<Vec<u8>> {
         let (ct, _) = self.uint(h)?;
         bincode::serialize(ct).map_err(|_| FheError::MalformedCiphertext)
+    }
+
+    /// Digest basis for op-stream attestation (protocol v0.4).
+    ///
+    /// v0.4 defines `ctDigest` over the integer-domain ciphertext,
+    /// excluding the high-level wrapper's `id`, `tag` and
+    /// `re_randomization_metadata`. Those last two are
+    /// application-settable and serialised, so a digest over the
+    /// wrapper would let two honest coprocessors produce different
+    /// digests from identical computation — which is exactly the
+    /// disagreement the fraud game cannot distinguish from cheating.
+    ///
+    /// Deliberately NOT folded into `serialize_handle`: that is the
+    /// *wire* shape clients submit and tests round-trip through
+    /// `verify_input`, and it must keep carrying the whole wrapper.
+    /// Two different jobs, two functions.
+    ///
+    /// `into_raw_parts` consumes the value, so this clones. The cost
+    /// is paid once per attested result, not per operation.
+    pub fn digest_basis(&self, h: Handle) -> Res<Vec<u8>> {
+        let (ct, _) = self.uint(h)?;
+        let (radix, _id, _tag, _rerand) = ct.clone().into_raw_parts();
+        bincode::serialize(&radix).map_err(|_| FheError::MalformedCiphertext)
     }
 
     /// Admit a client-supplied ciphertext.
