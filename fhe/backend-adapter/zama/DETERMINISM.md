@@ -13,14 +13,48 @@ input ciphertext**.
 
 ## Reference fingerprints
 
-SHA-256 of the serialised result of each operation, computed from trivially
-encrypted operands `a = 1_000_000`, `b = 337` (trivial encryption is used
-precisely because it is deterministic, giving every machine an identical
-starting ciphertext).
+SHA-256 of the **digest basis** of each result — the integer-domain radix
+ciphertext obtained via `into_raw_parts()` — computed from trivially encrypted
+operands `a = 1_000_000`, `b = 337` (trivial encryption is used precisely because
+it is deterministic, giving every machine an identical starting ciphertext).
 
-add 758d0b97d88bde5f68a99d589b1919cf9d2053b5ff5a3fcc5d0d6a50f5aa159a
-sub 963ec46976b76da359d866ca6252dbe2ed13eafa263709c4ff0407622fef421a
-select bf87fb019115b09567b32d5f8f7369ab089cb3d9e4e3ea4f8dffc316ea6063fc
+add 849a75d4a4d8c66320709df1cc550016e980c15a3aca5ac340970b19df6709bf
+sub f9aaa247ff013815857ae8664d9729d35ca3fa90d344a1a815640fcc4c6d7cce
+select 2bd6f509e1d432abe4d0e98b920c34fc2c48420f38a96e236d8124c3383ebe08
+
+### ⚠️ Basis change 2026-08-20 — these values changed; the computation did not
+
+**If you are comparing an old build against a new one, read this before
+concluding anything.** The figures above replace an earlier set taken over a
+different object, and a mismatch between the two sets is expected rather than
+alarming:
+
+```
+add    758d0b97d88bde5f68a99d589b1919cf9d2053b5ff5a3fcc5d0d6a50f5aa159a   (superseded)
+sub    963ec46976b76da359d866ca6252dbe2ed13eafa263709c4ff0407622fef421a   (superseded)
+select bf87fb019115b09567b32d5f8f7369ab089cb3d9e4e3ea4f8dffc316ea6063fc   (superseded)
+```
+
+**What changed.** The old values hashed `serialize_handle` — the **wire form**,
+which is the whole `FheUint64` wrapper. Op-stream protocol **v0.4** (declared
+2026-08-19) defines `ctDigest` over the **integer-domain ciphertext only**,
+excluding the wrapper's `id`, `tag` and `re_randomization_metadata`.
+
+**Why.** tfhe 1.7 serialises those last two, and both are *application-settable*.
+A digest over the wrapper would let two honest coprocessors produce different
+digests from identical computation — a disagreement the fraud game cannot
+distinguish from cheating. Narrowing the digested object also makes it robust to
+further members appearing upstream: 1.7 added a fourth; a fifth would otherwise
+walk straight into consensus-critical bytes.
+
+**What did not change.** The computation, the library version, the build profile,
+the machine. Only what is hashed. The old values remain correct *for the wire
+form*, which `serialize_handle` still produces — clients submit that shape and the
+admission tests round-trip through it.
+
+*Verified when the basis moved: `digest_basis_excludes_the_wrapper` asserts the
+basis is strictly smaller than the wire form, so the exclusion is checked rather
+than assumed.*
 
 
 TFHE-rs 1.7.0, release profile, CPU **without** AVX-512 (Intel Ultra 7 258V).

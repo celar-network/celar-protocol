@@ -85,7 +85,9 @@ fn fingerprint() {
 
     let digest = |be: &Backend, h| {
         let mut hasher = Sha256::new();
-        hasher.update(be.serialize_handle(h).unwrap());
+        // v0.4: fingerprints characterise what the protocol attests
+        // to — the integer-domain digest basis, not the wire form.
+        hasher.update(be.digest_basis(h).unwrap());
         format!("{:x}", hasher.finalize())
     };
 
@@ -102,47 +104,18 @@ fn fingerprint() {
 
 #[test]
 fn digest_basis_excludes_the_wrapper() {
-    let be = backend();                       // match the file's helper
-    let h = be.trivial_encrypt(42, 64).unwrap();
-
-    let wire = be.serialize_handle(h).unwrap();
-    let basis = be.digest_basis(h).unwrap();
-
-    // The wrapper carries id, tag and re-randomization metadata on top
-    // of the radix ciphertext, so the digest basis must be strictly
-    // smaller. If these ever match, the exclusion silently stopped
-    // working and the attestation is back on application-settable bytes.
-    assert!(
-        basis.len() < wire.len(),
-        "digest basis ({} bytes) is not smaller than the wire form ({}) \
-         — wrapper fields may no longer be excluded",
-        basis.len(), wire.len()
-    );
-
-    // Same value, same basis — twice.
-    let again = be.digest_basis(h).unwrap();
-    assert_eq!(basis, again, "digest basis is not stable");
-}
-
-#[test]
-fn digest_basis_excludes_the_wrapper() {
     // Protocol v0.4 defines ctDigest over the integer-domain
-    // ciphertext, excluding the high-level wrapper's id, tag and
-    // re-randomization metadata. Those last two are settable by the
-    // application and serialised with the ciphertext, so a digest
-    // over the wrapper would let two honest coprocessors disagree
-    // from identical computation — a difference the fraud game
-    // cannot tell apart from cheating.
+    // ciphertext, excluding the wrapper's id, tag and re-randomization
+    // metadata. The last two are settable by the application and are
+    // serialised with the ciphertext, so digesting the wrapper would
+    // let two honest coprocessors disagree from identical computation
+    // — a difference the fraud game cannot tell from cheating.
     let (mut be, ck) = setup();
     let h = be.encrypt(42, 64, &ck).unwrap();
 
     let wire = be.serialize_handle(h).unwrap();
     let basis = be.digest_basis(h).unwrap();
 
-    // The wire form carries the wrapper on top of the radix
-    // ciphertext, so the digest basis must be strictly smaller.
-    // If these ever match, the exclusion has silently stopped
-    // working and attestation is back on application-settable bytes.
     assert!(
         basis.len() < wire.len(),
         "digest basis ({} B) is not smaller than the wire form ({} B) \
@@ -151,7 +124,6 @@ fn digest_basis_excludes_the_wrapper() {
         wire.len()
     );
 
-    // Same ciphertext, same basis, twice.
     assert_eq!(
         basis,
         be.digest_basis(h).unwrap(),
