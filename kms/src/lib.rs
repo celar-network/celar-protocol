@@ -15,6 +15,7 @@
 
 pub mod acl;
 pub mod authz;
+pub mod budget;
 pub mod committee;
 pub mod config;
 pub mod decrypt;
