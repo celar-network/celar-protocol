@@ -24,6 +24,7 @@ pub mod header_trust;
 pub mod ics23_verify;
 pub mod mpt;
 pub mod node;
+pub mod reencrypt;
 pub mod reshare;
 pub mod transcript;
 

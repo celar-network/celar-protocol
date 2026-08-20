@@ -81,6 +81,25 @@ enum Cmd {
         #[arg(long, default_value = "decrypt-report.json")]
         out: PathBuf,
     },
+    /// B3: threshold RE-ENCRYPTION (§7.3) — seats produce masked partials,
+    /// the requester combines them locally. No intermediary sees plaintext.
+    Reencrypt {
+        #[arg(long)]
+        keys_dir: PathBuf,
+        #[arg(long)]
+        shares_dir: Option<PathBuf>,
+        #[arg(long, default_value_t = 42)]
+        value: u64,
+        /// Combine only the first K partials (quorum behaviour). Default: all.
+        #[arg(long)]
+        partials: Option<usize>,
+        /// Scaling check: repeat one seat's partial decryption N times and
+        /// require the cost to grow ~N-fold before any timing is quotable.
+        #[arg(long, default_value_t = 1)]
+        repeat: usize,
+        #[arg(long, default_value = "reencrypt-report.json")]
+        out: PathBuf,
+    },
     /// Verify a reshare transcript against its predecessor (+ keys dir).
     VerifyReshare {
         #[arg(long)]
@@ -214,6 +233,61 @@ async fn main() -> Result<()> {
                 outcome.report.wall_secs,
                 out.display()
             );
+            Ok(())
+        }
+        Cmd::Reencrypt {
+            keys_dir,
+            shares_dir,
+            value,
+            partials,
+            repeat,
+            out,
+        } => {
+            let shares = shares_dir.clone().unwrap_or_else(|| keys_dir.clone());
+            eprintln!(
+                "celar-dkg: threshold RE-ENCRYPTION (§7.3) — masked partials from {}, \
+                 combined client-side",
+                shares.display()
+            );
+            let outcome = celar_kms::reencrypt::run_local_reencrypt(
+                &keys_dir, &shares, value, partials, repeat, &out,
+            )
+            .await?;
+            let r = &outcome.report;
+            println!(
+                "REENCRYPT-OK combined {}/{} partials value={}",
+                r.partials_combined, r.parties, r.value_recovered,
+            );
+            println!(
+                "  per-seat partial (COLD, incl. warm-up): min {:.4}s median {:.4}s max {:.4}s",
+                r.seat_timings.min_secs, r.seat_timings.median_secs, r.seat_timings.max_secs,
+            );
+            match r.warm_per_iter_secs {
+                Some(w) => println!(
+                    "  steady-state per seat (WARM, {}x): {:.4}s | client combine {:.4}s | \
+                     harness wall {:.4}s",
+                    r.repeat, w, r.combine_secs, r.partial_secs
+                ),
+                None => println!(
+                    "  steady-state: not measured (--repeat N) | client combine {:.4}s | \
+                     harness wall {:.4}s",
+                    r.combine_secs, r.partial_secs
+                ),
+            }
+            println!(
+                "  §7.3 latency: {}\n  {}",
+                if !r.timing_valid {
+                    "VOID — not quotable (correctness unaffected)".to_string()
+                } else {
+                    format!(
+                        "{} at c={} on local runtime + test params — NOT a t≤100 claim",
+                        if r.meets_2s_target { "under 2 s" } else { "OVER 2 s" },
+                        r.parties
+                    )
+                },
+                r.timing_note,
+            );
+            println!("  report {}", out.display());
             Ok(())
         }
         Cmd::VerifyReshare {
