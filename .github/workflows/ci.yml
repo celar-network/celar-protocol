@@ -76,6 +76,17 @@ jobs:
         # the hashes here would produce failures that mean nothing.
         run: cargo test --release
 
+      - name: property tests
+        working-directory: fhe/backend-adapter/zama
+        # Marked #[ignore] because they are slower than the unit tests,
+        # so they are opt-in locally — which meant they had never run in
+        # CI at all. They are also the tests that check what the frozen
+        # ABI actually promises: arithmetic agrees with wrapping
+        # plaintext, comparisons are trichotomous, select is total.
+        # Measured at ~40s on the runner's class of machine, against a
+        # job that already takes minutes.
+        run: cargo test --release --test properties -- --ignored
+
   abi:
     name: abi conformance (python)
     runs-on: ubuntu-latest
