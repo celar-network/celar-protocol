@@ -112,6 +112,17 @@ contract ConfidentialERC20 {
 
     error NotMinter();
 
+    /// Time-boxed, per the standard — deliberately not an
+    /// ERC-20 allowance. An expiry matters more here than
+    /// on a transparent token: a standing permission over
+    /// confidential balances is one the holder cannot
+    /// audit, because they cannot see what was moved.
+    mapping(address => mapping(address => uint48)) private _operatorUntil;
+
+    event OperatorSet(address indexed holder, address indexed operator, uint48 until);
+
+    error NotAnOperator(address holder, address caller);
+
     constructor(string memory name_, string memory symbol_, string memory uri_) {
         name = name_;
         symbol = symbol_;
@@ -278,5 +289,49 @@ contract ConfidentialERC20 {
 
     function _grantRead(euint64 handle, address account) private {
         TFHE.allow(handle, account, TFHE.PERM_REENCRYPT_TO_SELF);
+    }
+
+    // ---- operators ---------------------------------
+
+    /// Setting `until` to a past value revokes: there is
+    /// no separate revoke call, and none is needed.
+    function setOperator(address operator, uint48 until) external {
+        _operatorUntil[msg.sender][operator] = until;
+        emit OperatorSet(msg.sender, operator, until);
+    }
+
+    function isOperator(address holder, address spender) public view returns (bool) {
+        // block.timestamp is the right primitive here and the
+        // linter's warning does not apply: the standard specifies a
+        // uint48 *timestamp* expiry, and block numbers would make a
+        // "30 day" grant drift as block time varies. Validator
+        // influence over the timestamp is seconds, against a
+        // permission measured in days. Timestamp dependence is
+        // dangerous when it gates a race; this gates a duration.
+        return _operatorUntil[holder][spender] >= block.timestamp;
+    }
+
+    /// Move `amount` from `from`, as `from` or as their
+    /// operator.
+    ///
+    /// Two plaintext checks, so neither leaks: the caller
+    /// must be authorised, and the amount handle must have
+    /// been issued to the holder or to the caller.
+    ///
+    /// That second check is not ceremony. Without it an
+    /// operator could name a third party's balance handle
+    /// as the amount, send to themselves, and collect the
+    /// read grant on what actually moved — the same
+    /// confused-deputy attack the direct path already
+    /// refuses, arriving through delegation.
+    function confidentialTransferFrom(address from, address to, bytes32 amount) external returns (bytes32) {
+        if (msg.sender != from && !isOperator(from, msg.sender)) {
+            revert NotAnOperator(from, msg.sender);
+        }
+        address issued = _issuedTo[amount];
+        if (issued != from && issued != msg.sender) {
+            revert HandleNotIssuedToCaller(amount);
+        }
+        return _transfer(from, to, euint64.wrap(amount));
     }
 }
