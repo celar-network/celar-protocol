@@ -68,7 +68,39 @@ impl BudgetedOp {
 /// §7.2 target statistical security. The spec fixes λ_target = 40.
 pub const LAMBDA_TARGET: u32 = 40;
 /// Spec's preferred flooding parameter ("equivalently: prefer λ_stat = 64").
+///
+/// ⚠️ PREFERRED, NOT PROVIDED. The deployed library's flooding parameter is
+/// [`UPSTREAM_STATSEC`], and the decryption margin caps how far it can ever be
+/// raised (see [`MAX_SAFE_LAMBDA_STAT`]). 64 exceeds that cap and is therefore
+/// not implementable on the current construction; the constant is retained
+/// because the spec text names it, and [`BudgetParams::validate`] refuses it.
 pub const LAMBDA_STAT_PREFERRED: u32 = 64;
+
+/// The flooding parameter the deployed library actually compiles
+/// (`threshold-execution` `STATSEC`). The budget's λ_stat MUST equal this:
+/// a budget computed from a larger λ_stat enforces a ceiling the flooding
+/// does not provide — arithmetically correct and physically meaningless.
+///
+/// Mirrored as a local constant and asserted against the upstream export in
+/// a test, so a silent upstream change fails the build's test run rather
+/// than silently invalidating every budget in force.
+pub const UPSTREAM_STATSEC: u32 = 40;
+
+/// Hard ceiling on any future λ_stat, from the decryption margin — NOT a
+/// tunable. Decryption rounds at Δ = 2^123 with message+carry in bits
+/// 123..=126, so total noise must stay under Δ/2 = 2^122. The flooding mask
+/// on the large-session path is bounded by 2^(70 + λ_stat + 1) and rides on
+/// top of the real post-squash noise (≤ 2^70), giving
+///   2^(71 + λ_stat) + 2^70 < 2^122  ⟺  λ_stat ≤ 50.
+/// (Earlier analysis said 51; that neglected the additive 2^70 term, which
+/// upstream's own tightness argument absorbs via PRSS-set slack that does
+/// not exist on the flat path. 50 leaves 2× residual headroom; 51 leaves
+/// none, which also matters for corruption resistance — E24.)
+///
+/// Raising the library's STATSEC above this silently corrupts plaintexts:
+/// there is no upstream assertion that the mask fits under Δ/2, and the
+/// first hard error does not fire until 57.
+pub const MAX_SAFE_LAMBDA_STAT: u32 = 50;
 /// Spec default sub-budget divisor: "Q_max/64 per contract per epoch".
 pub const SUB_BUDGET_DIVISOR: u64 = 64;
 
@@ -86,13 +118,16 @@ pub struct BudgetParams {
 }
 
 impl BudgetParams {
-    /// Spec-default parameters for a given Q_max: sub-budget = Q_max/64,
-    /// λ_stat = 64, λ_target = 40.
+    /// Default parameters for a given Q_max: sub-budget = Q_max/64,
+    /// λ_target = 40, and λ_stat = **what the library provides**
+    /// ([`UPSTREAM_STATSEC`]), not the spec's preferred 64 — defaulting to a
+    /// value the flooding does not back was the defect the cross-check in
+    /// [`Self::validate`] exists to refuse.
     pub fn with_q_max(q_max: u64) -> Self {
         Self {
             q_max,
             per_contract_max: (q_max / SUB_BUDGET_DIVISOR).max(1),
-            lambda_stat: LAMBDA_STAT_PREFERRED,
+            lambda_stat: UPSTREAM_STATSEC,
             lambda_target: LAMBDA_TARGET,
         }
     }
@@ -111,6 +146,24 @@ impl BudgetParams {
     pub fn validate(&self) -> Result<()> {
         if self.q_max == 0 {
             bail!("Q_max must be positive");
+        }
+        // The λ cross-check: the configured flooding parameter must be the
+        // one the deployed library provides. Refusal, not clamping — a
+        // silently adjusted budget is a budget the operator believes wrongly.
+        if self.lambda_stat != UPSTREAM_STATSEC {
+            bail!(
+                "λ_stat ({}) is not the flooding parameter the deployed \
+                 library provides (STATSEC = {}). A budget computed from a \
+                 larger λ_stat enforces a ceiling the flooding does not back; \
+                 one computed from a smaller value wastes real capacity. \
+                 Either is a misconfiguration. Note the decryption margin \
+                 caps λ_stat at {} permanently (Δ/2 = 2^122 vs a mask of \
+                 2^(71+λ_stat)); raising the library constant past that \
+                 corrupts plaintexts silently.",
+                self.lambda_stat,
+                UPSTREAM_STATSEC,
+                MAX_SAFE_LAMBDA_STAT
+            );
         }
         if self.lambda_stat <= self.lambda_target {
             bail!(
@@ -294,30 +347,73 @@ impl EpochBudget {
 mod tests {
     use super::*;
 
+    /// Test fixture for admission-mechanics tests. λ_target is lowered to 30
+    /// so that the library's real λ_stat = 40 yields 2^10 of headroom and
+    /// `validate()` passes on its true code path. This is a FIXTURE: §7.2
+    /// fixes λ_target = 40, and under the real pair (40, 40) no budget
+    /// validates — `current_truth_no_valid_budget_exists_yet` pins that.
+    /// The mechanics under test (charging, refusal, reset, counters) do not
+    /// depend on the pair's values.
+    fn mech_params(q_max: u64) -> BudgetParams {
+        let mut p = BudgetParams::with_q_max(q_max);
+        p.lambda_target = 30;
+        p
+    }
+
+    #[test]
+    fn upstream_statsec_mirror_is_current() {
+        // If upstream changes STATSEC, this fails the test run instead of
+        // silently invalidating every budget in force.
+        assert_eq!(
+            UPSTREAM_STATSEC,
+            threshold_execution::constants::STATSEC,
+            "upstream STATSEC changed — re-derive MAX_SAFE_LAMBDA_STAT and \
+             re-run the E22(a) margin analysis before updating the mirror"
+        );
+    }
+
     #[test]
     fn lambda_relation_bounds_q_max() {
-        // §7.2: λ_stat ≥ λ_target + log₂(Q_max). At the preferred λ_stat = 64
-        // and λ_target = 40 the ceiling is 2^24.
-        let p = BudgetParams::with_q_max(1 << 24);
+        // The relation itself: λ_stat ≥ λ_target + log₂(Q_max).
+        let mut p = BudgetParams::with_q_max(1 << 24);
+        p.lambda_stat = 64;
         assert_eq!(p.max_admissible_q_max(), 1 << 24);
-        p.validate().unwrap();
+        // At the future λ_stat = 50 the ceiling is 2^10 = 1024.
+        p.lambda_stat = 50;
+        assert_eq!(p.max_admissible_q_max(), 1 << 10);
+    }
 
-        // One above the ceiling must be refused, with the reason stated.
-        let mut bad = BudgetParams::with_q_max((1 << 24) + 1);
-        bad.per_contract_max = 1;
-        let err = bad.validate().unwrap_err().to_string();
-        assert!(err.contains("flooding ceiling"), "{err}");
+    #[test]
+    fn preferred_lambda_is_refused_as_not_provided() {
+        // The spec's preferred 64 is not what the library compiles, and the
+        // margin analysis (E22a) showed it can never be. Must refuse.
+        let mut p = BudgetParams::with_q_max(1 << 24);
+        p.lambda_stat = LAMBDA_STAT_PREFERRED;
+        let err = p.validate().unwrap_err().to_string();
+        assert!(err.contains("not the flooding parameter"), "{err}");
+    }
 
-        // Raising λ_stat buys headroom, exactly as the relation says.
-        let mut raised = BudgetParams::with_q_max((1 << 24) + 1);
-        raised.per_contract_max = 1;
-        raised.lambda_stat = 66;
-        raised.validate().unwrap();
+    #[test]
+    fn current_truth_no_valid_budget_exists_yet() {
+        // With the library at STATSEC = 40 and λ_target fixed at 40, the
+        // honest state is that NO budget configuration validates: λ_stat
+        // equals λ_target, leaving zero oracle budget. This test pins that
+        // truth. When the STATSEC 40 → 50 raise lands upstream (or as a
+        // fork), UPSTREAM_STATSEC moves to 50, this test starts failing,
+        // and the replacement assertion is: with_q_max(1024) validates and
+        // with_q_max(1025) is refused.
+        let p = BudgetParams::with_q_max(1);
+        let err = p.validate().unwrap_err().to_string();
+        assert!(err.contains("no budget at all"), "{err}");
+        assert!(p.lambda_stat == UPSTREAM_STATSEC);
+    }
 
-        // λ_stat = λ_target leaves no budget at all.
-        let mut degenerate = BudgetParams::with_q_max(1);
-        degenerate.lambda_stat = LAMBDA_TARGET;
-        assert!(degenerate.validate().is_err());
+    #[test]
+    fn max_safe_lambda_stat_is_below_the_prf_error_floor() {
+        // The first upstream *hard* error fires at STATSEC 57 (prf.rs bd1
+        // bound). Everything in 51..=56 corrupts silently. Our cap must sit
+        // strictly below the silent band, not just below the error.
+        assert!(MAX_SAFE_LAMBDA_STAT < 51);
     }
 
     #[test]
@@ -333,7 +429,7 @@ mod tests {
     fn one_contract_cannot_consume_the_epoch() {
         // The denial-vector property: a single adversarial contract is capped
         // at its sub-budget, leaving the rest of the epoch for everyone else.
-        let params = BudgetParams::with_q_max(640); // sub-budget 10
+        let params = mech_params(640); // sub-budget 10
         let mut b = EpochBudget::new(1, params).unwrap();
 
         for _ in 0..10 {
@@ -351,7 +447,14 @@ mod tests {
     #[test]
     fn refusal_charges_nothing() {
         // "no partial state": a refused admission must not consume budget.
-        let mut params = BudgetParams::with_q_max(64);
+        // Uses `mech_params` (counterfactual λ_target = 30) like every other
+        // MECHANISM test: with the real deployed values λ_stat = λ_target = 40
+        // the headroom is zero and NO budget is constructible at all — that
+        // truth is asserted by `current_truth_no_valid_budget_exists_yet` and
+        // `preferred_lambda_is_refused_as_not_provided`, and must not be
+        // re-litigated here. `BudgetParams::with_q_max` therefore cannot be
+        // used to test accounting behaviour.
+        let mut params = mech_params(64);
         params.per_contract_max = 1;
         let mut b = EpochBudget::new(1, params).unwrap();
 
@@ -363,7 +466,7 @@ mod tests {
 
     #[test]
     fn global_budget_binds_across_many_contracts() {
-        let mut params = BudgetParams::with_q_max(4);
+        let mut params = mech_params(4);
         params.per_contract_max = 1; // 4 contracts × 1 = global
         let mut b = EpochBudget::new(1, params).unwrap();
 
@@ -378,7 +481,7 @@ mod tests {
     #[test]
     fn resharing_resets_the_epoch_budget_but_never_rewinds() {
         // §7.5: "Proactive resharing resets the budget each epoch."
-        let mut params = BudgetParams::with_q_max(64);
+        let mut params = mech_params(64);
         params.per_contract_max = 1;
         let mut b = EpochBudget::new(1, params).unwrap();
         b.admit("0xa", BudgetedOp::Reveal).unwrap();
@@ -395,7 +498,8 @@ mod tests {
 
     #[test]
     fn counters_are_public_and_per_contract() {
-        let mut b = EpochBudget::new(7, BudgetParams::with_q_max(6400)).unwrap();
+        // 640 keeps q_max inside the fixture's real ceiling (2^10 = 1024).
+        let mut b = EpochBudget::new(7, mech_params(640)).unwrap();
         b.admit("0xalpha", BudgetedOp::Reveal).unwrap();
         b.admit("0xalpha", BudgetedOp::ReencryptToUser).unwrap();
         b.admit("0xbeta", BudgetedOp::Unshield).unwrap();
@@ -411,14 +515,14 @@ mod tests {
 
     #[test]
     fn accumulated_distance_tracks_the_flooding_argument() {
-        // Q·2^−λ_stat: after 2^10 ops at λ_stat=64 the exponent is −54,
-        // still far inside λ_target=40.
-        let mut b = EpochBudget::new(1, BudgetParams::with_q_max(1 << 24)).unwrap();
-        for i in 0..1024 {
+        // Q·2^−λ_stat at the library's real λ_stat = 40: after 2^9 ops the
+        // exponent is 9 − 40 = −31, inside the fixture's λ_target = 30.
+        let mut b = EpochBudget::new(1, mech_params(1024)).unwrap();
+        for i in 0..512 {
             b.admit(&format!("0x{}", i % 64), BudgetedOp::Reveal).unwrap();
         }
         let log2_dist = b.accumulated_distance_log2();
-        assert!((log2_dist - (10.0 - 64.0)).abs() < 1e-9);
-        assert!(log2_dist < -(LAMBDA_TARGET as f64));
+        assert!((log2_dist - (9.0 - 40.0)).abs() < 1e-9);
+        assert!(log2_dist < -30.0);
     }
 }
