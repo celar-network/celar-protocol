@@ -61,9 +61,18 @@ pub enum PreprocMode {
     #[default]
     Dummy,
     /// `SecureSmallPreprocessing` — the real MPC offline phase (triples +
-    /// randomness via sync reliable broadcast). Expensive; this is what a
-    /// genesis ceremony actually runs.
+    /// randomness via sync reliable broadcast). **PRSS-based and hard-capped
+    /// at `binom(n,t) ≤ 2047`, so it cannot reach genesis scale** —
+    /// `binom(30,9) ≈ 14.3M` is refused. Real, small committees only.
     Secure,
+    /// `SecureLargePreprocessing` — the real large-session offline phase
+    /// (VSS + coinflip + single/double sharing; no PRSS, no party-count
+    /// cap; flooding masks carry no `binom` factor). **This is what a
+    /// genesis ceremony must run.** Caveat, stated because it matters:
+    /// upstream ships this path tested to n=13 but their own production
+    /// server never invokes it — we are its first production consumer, so
+    /// the cross-party pk_G equality check is load-bearing here.
+    SecureLarge,
 }
 
 impl PreprocMode {
@@ -71,6 +80,7 @@ impl PreprocMode {
         match self {
             PreprocMode::Dummy => "dummy",
             PreprocMode::Secure => "secure-small",
+            PreprocMode::SecureLarge => "secure-large",
         }
     }
 }
@@ -153,6 +163,27 @@ impl CommitteeConfig {
     pub fn validate(&self) -> Result<()> {
         if self.parties < 2 {
             bail!("committee needs at least 2 parties (got {})", self.parties);
+        }
+        // The large-session offline path robust-opens DEGREE-2t values, so
+        // it requires n ≥ 4t + 1 — a stricter corruption bound (t < n/4)
+        // than the classic t < n/3 the session-threshold default assumes.
+        // Upstream's own test committees for this path are exactly (5,1),
+        // (9,2), (13,3). Without this guard the failure surfaces as
+        // "Could not reconstruct the sharing" deep in the library, on the
+        // first open, with nothing pointing at the threshold.
+        if self.preprocessing == PreprocMode::SecureLarge
+            && self.parties <= 4 * self.session_threshold()
+        {
+            bail!(
+                "secure-large preprocessing requires parties ≥ 4·t_session + 1: \
+                 got c={} with t_session={} (need c ≥ {}). Either lower \
+                 session_threshold explicitly (large-path corruption bound is \
+                 t < n/4, not n/3 — e.g. t ≤ 7 at c=30, t ≤ 24 at c=100) or \
+                 grow the committee.",
+                self.parties,
+                self.session_threshold(),
+                4 * self.session_threshold() + 1
+            );
         }
         if self.parties > MAX_PARTIES {
             bail!(

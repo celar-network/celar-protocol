@@ -28,13 +28,16 @@ use threshold_execution::endpoints::keygen::{
 };
 use threshold_execution::keyset_config::KeySetConfig;
 use threshold_execution::online::preprocessing::dummy::DummyPreprocessing;
-use threshold_execution::online::preprocessing::{create_memory_factory, DKGPreprocessing};
+use threshold_execution::online::preprocessing::{
+    create_memory_factory, DKGPreprocessing, RandomPreprocessing, TriplePreprocessing,
+};
 use threshold_execution::runtime::sessions::base_session::{
     GenericBaseSessionHandles, ToBaseSession,
 };
 use threshold_execution::runtime::sessions::large_session::LargeSession;
 use threshold_execution::runtime::sessions::session_parameters::GenericParameterHandles;
 use threshold_execution::runtime::sessions::small_session::SmallSession;
+use threshold_execution::large_execution::offline::SecureLargePreprocessing;
 use threshold_execution::small_execution::offline::{Preprocessing, SecureSmallPreprocessing};
 use threshold_execution::tests::helper::tests_and_benches::{
     execute_protocol_large, execute_protocol_small,
@@ -185,6 +188,118 @@ async fn run_parties_secure(cfg: &CommitteeConfig) -> Vec<PartyResult> {
     .await
 }
 
+/// Secure LARGE-session offline phase (W33(5) closure): the genesis-scale
+/// path. Same VSS/coinflip/double-sharing offline machinery upstream ships
+/// but never wires into its own server — no PRSS, no `binom(n,t)` cap, and
+/// the flooding masks it feeds carry no `binom` factor (the E22(a) path
+/// with the 2048× headroom).
+///
+/// Sync network mode: the offline sub-protocols (reliable broadcast, VSS)
+/// assume synchrony, exactly as the small path does. The H2 doctrine —
+/// online keygen must run Async over REAL networks — applies when this
+/// moves to the ceremony node; the local single-process runtime does not
+/// race round deadlines the same way, and this mirrors how the small path
+/// runs locally today. Revisit at the H2 integration, not before.
+async fn run_parties_secure_large(cfg: &CommitteeConfig) -> Vec<PartyResult> {
+    let params = dkg_params(cfg.params);
+    let keyset_config = KeySetConfig::default();
+    let batch = BatchParams {
+        triples: params.total_triples_required(keyset_config),
+        randoms: params.total_randomness_required(keyset_config),
+    };
+    let tag_bytes = cfg.tag.clone().into_bytes();
+
+    let mut task = |mut session: LargeSession| {
+        let tag_bytes = tag_bytes.clone();
+        async move {
+            let role = session.my_role().one_based();
+
+            // Same round-timeout widening as the small secure path, same
+            // reason: heavy offline compute between Sync rounds drops
+            // shares at default deadlines ("Could not reconstruct the
+            // sharing"), and a dev run time-slices all c parties on one
+            // machine.
+            session
+                .network()
+                .set_timeout_for_next_round(std::time::Duration::from_secs(600))
+                .await;
+
+            // 1) the real large-session offline phase — in BOUNDED BATCHES.
+            //
+            // First attempt passed the whole DKG requirement as one batch,
+            // mirroring the small path. It failed ("Could not reconstruct
+            // the sharing", 17.4 GiB peak at c=4): the large path's
+            // single/double-sharing machinery scales per-batch in a way
+            // PRSS does not, and upstream's own tests never run it with a
+            // batch above 10 (offline.rs tests: BatchParams{10,10} × 3).
+            // We use a larger chunk than their tests — one round-trip per
+            // 512 triples — but bounded, accumulating into the base store.
+            const CHUNK: usize = 512;
+            let mut large_preproc =
+                threshold_execution::online::preprocessing::memory::InMemoryBasePreprocessing::<
+                    ResiduePoly<Z128, EXTENSION_DEGREE>,
+                >::default();
+            let mut left = batch;
+            while left.triples > 0 || left.randoms > 0 {
+                let step = BatchParams {
+                    triples: left.triples.min(CHUNK),
+                    randoms: left.randoms.min(CHUNK),
+                };
+                let mut chunk_out = SecureLargePreprocessing::default()
+                    .execute(&mut session, step)
+                    .await
+                    .expect("secure large offline phase failed");
+                large_preproc.append_triples(
+                    chunk_out
+                        .next_triple_vec(step.triples)
+                        .expect("draining chunk triples"),
+                );
+                large_preproc.append_randoms(
+                    chunk_out
+                        .next_random_vec(step.randoms)
+                        .expect("draining chunk randoms"),
+                );
+                left.triples -= step.triples;
+                left.randoms -= step.randoms;
+            }
+
+            // 2) shape into DKG preprocessing material — identical to the
+            // small path from here down.
+            let mut dkg_preproc = create_memory_factory().create_dkg_preprocessing_with_sns();
+            dkg_preproc
+                .fill_from_base_preproc(
+                    params,
+                    keyset_config,
+                    session.get_mut_base_session(),
+                    &mut large_preproc,
+                )
+                .await
+                .expect("filling DKG preprocessing failed");
+
+            // 3) online keygen, identical to both other paths.
+            let (pk, sk) = SecureOnlineDistributedKeyGen128::<EXTENSION_DEGREE>::keygen(
+                session.get_mut_base_session(),
+                dkg_preproc.as_mut(),
+                params,
+                build_tag(&tag_bytes),
+            )
+            .await
+            .expect("distributed keygen failed");
+            (role, pk, sk)
+        }
+    };
+
+    execute_protocol_large::<_, _, ResiduePoly<Z128, EXTENSION_DEGREE>, EXTENSION_DEGREE>(
+        cfg.parties,
+        cfg.session_threshold(),
+        None,
+        NetworkMode::Sync,
+        None,
+        &mut task,
+    )
+    .await
+}
+
 /// Run the genesis-mode DKG locally with `cfg.parties` members and write the
 /// transcript (plus, optionally, dev key material for level-2 verification)
 /// into `out_dir`.
@@ -205,6 +320,7 @@ pub async fn run_local_dkg(
     let mut results = match cfg.preprocessing {
         PreprocMode::Dummy => run_parties_dummy(cfg).await,
         PreprocMode::Secure => run_parties_secure(cfg).await,
+        PreprocMode::SecureLarge => run_parties_secure_large(cfg).await,
     };
     let wall_secs = started.elapsed().as_secs_f64();
 

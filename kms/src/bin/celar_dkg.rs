@@ -134,8 +134,9 @@ async fn main() -> Result<()> {
                     preprocessing: match preproc.as_str() {
                         "dummy" => PreprocMode::Dummy,
                         "secure" => PreprocMode::Secure,
+                        "secure-large" => PreprocMode::SecureLarge,
                         other => anyhow::bail!(
-                            "unknown --preproc {other:?} (expected dummy | secure)"
+                            "unknown --preproc {other:?} (expected dummy | secure | secure-large)"
                         ),
                     },
                     ..Default::default()
