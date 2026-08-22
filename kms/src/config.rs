@@ -25,6 +25,34 @@ use serde::{Deserialize, Serialize};
 pub const GENESIS_MIN: usize = 30;
 pub const GENESIS_MAX: usize = 50;
 
+/// Hard ceiling on committee size imposed by the **sharing domain**, not by policy.
+///
+/// Each party's evaluation point is embedded in an *exceptional sequence* with
+/// exactly `2^EXTENSION_DEGREE` elements, and index 0 is reserved for the secret,
+/// so at most `2^EXTENSION_DEGREE - 1` parties can hold a share. Exceeding it fails
+/// deep inside the algebra layer ("Value {idx} is too large to be embedded!"), a
+/// long way from the configuration that caused it — which is why it is checked here.
+pub const MAX_PARTIES: usize = (1 << crate::EXTENSION_DEGREE) - 1;
+
+// Compile-time consistency between policy and algebra.
+//
+// This assertion exists because the two disagreed in shipped code and nothing
+// noticed. Until 2026-08-20 `EXTENSION_DEGREE` was 4, giving MAX_PARTIES = 15,
+// while `committee.rs` refused any committee below GENESIS_MIN = 30 — so **no
+// committee size satisfied both**, and every "genesis-scale" test we had passed
+// because it exercised the roster rules rather than an actual sharing at that size.
+// Found while answering E18; filed as W33.
+//
+// A runtime check alone would have been the weaker fix: it only fires if someone
+// runs a genesis-scale ceremony, which is exactly the thing that had never been run.
+const _: () = assert!(
+    GENESIS_MAX <= MAX_PARTIES,
+    "EXTENSION_DEGREE is too small for the §7.7 genesis committee range: no \
+     committee size satisfies both GENESIS_MIN..=GENESIS_MAX and the sharing \
+     domain's 2^EXTENSION_DEGREE - 1 party ceiling. Raise EXTENSION_DEGREE \
+     (upstream ships degrees 3-8) and re-measure — every ring element widens."
+);
+
 /// Which offline phase feeds the DKG (B1 hardening H1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -125,6 +153,19 @@ impl CommitteeConfig {
     pub fn validate(&self) -> Result<()> {
         if self.parties < 2 {
             bail!("committee needs at least 2 parties (got {})", self.parties);
+        }
+        if self.parties > MAX_PARTIES {
+            bail!(
+                "committee size {} exceeds the sharing domain ceiling of {} parties: \
+                 EXTENSION_DEGREE = {} yields 2^{} exceptional points and index 0 is \
+                 reserved for the secret. This is an algebra limit, not a policy one — \
+                 raise EXTENSION_DEGREE (upstream ships degrees 3-8) and re-measure, \
+                 since every ring element widens with it.",
+                self.parties,
+                MAX_PARTIES,
+                crate::EXTENSION_DEGREE,
+                crate::EXTENSION_DEGREE
+            );
         }
         let t_r = self.reconstruction_quorum();
         if t_r > self.parties {
