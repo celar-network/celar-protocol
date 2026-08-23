@@ -126,6 +126,25 @@ pub struct CommitteeConfig {
     /// Seed for the dummy preprocessing (dummy mode only; recorded in the
     /// transcript so a run is reproducible).
     pub preproc_seed: u64,
+    /// Offline-phase chunk size for the secure-large path: triples/randoms
+    /// generated per sub-protocol run, accumulated into the base store.
+    /// Trades memory against rounds — upstream never exceeds 10 in its own
+    /// tests; a monolithic batch fails inside robust reconstruction. Peak
+    /// RSS falls with smaller chunks; wall clock rises with the extra
+    /// VSS/broadcast rounds. Recorded in the transcript environment.
+    #[serde(default = "default_preproc_chunk")]
+    pub preproc_chunk: usize,
+}
+
+fn default_preproc_chunk() -> usize {
+    // Measured (c=5, test params, one machine, single batch of runs):
+    // chunk 128 → 720 s, 512 → 439 s, 2048 → 332 s, 8192 → 303 s, with peak
+    // RSS FLAT (~10.1–10.5 GiB) across the whole range — the floor is the
+    // accumulated total material, not the chunk. So chunk size is a
+    // wall-clock knob with a correctness cliff somewhere above 8192 (the
+    // monolithic batch fails in robust reconstruction); 2048 takes most of
+    // the win while staying 4× below the largest probed-safe value.
+    2048
 }
 
 impl Default for CommitteeConfig {
@@ -138,6 +157,7 @@ impl Default for CommitteeConfig {
             params: ParamsChoice::Test,
             preprocessing: PreprocMode::default(),
             preproc_seed: 42,
+            preproc_chunk: default_preproc_chunk(),
         }
     }
 }

@@ -208,6 +208,7 @@ async fn run_parties_secure_large(cfg: &CommitteeConfig) -> Vec<PartyResult> {
         randoms: params.total_randomness_required(keyset_config),
     };
     let tag_bytes = cfg.tag.clone().into_bytes();
+    let chunk_size = cfg.preproc_chunk;
 
     let mut task = |mut session: LargeSession| {
         let tag_bytes = tag_bytes.clone();
@@ -232,9 +233,11 @@ async fn run_parties_secure_large(cfg: &CommitteeConfig) -> Vec<PartyResult> {
             // single/double-sharing machinery scales per-batch in a way
             // PRSS does not, and upstream's own tests never run it with a
             // batch above 10 (offline.rs tests: BatchParams{10,10} × 3).
-            // We use a larger chunk than their tests — one round-trip per
-            // 512 triples — but bounded, accumulating into the base store.
-            const CHUNK: usize = 512;
+            // We use a larger chunk than their tests — bounded, from config
+            // (`preproc_chunk`, default 512), accumulating into the base
+            // store. Chunk size trades peak memory against rounds; it is a
+            // measured knob, not a guess — see tasks/B1/02.
+            let chunk: usize = chunk_size.max(1);
             let mut large_preproc =
                 threshold_execution::online::preprocessing::memory::InMemoryBasePreprocessing::<
                     ResiduePoly<Z128, EXTENSION_DEGREE>,
@@ -242,8 +245,8 @@ async fn run_parties_secure_large(cfg: &CommitteeConfig) -> Vec<PartyResult> {
             let mut left = batch;
             while left.triples > 0 || left.randoms > 0 {
                 let step = BatchParams {
-                    triples: left.triples.min(CHUNK),
-                    randoms: left.randoms.min(CHUNK),
+                    triples: left.triples.min(chunk),
+                    randoms: left.randoms.min(chunk),
                 };
                 let mut chunk_out = SecureLargePreprocessing::default()
                     .execute(&mut session, step)
