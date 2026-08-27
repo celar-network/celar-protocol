@@ -42,7 +42,7 @@ fn two_honest_mints_of_the_same_amount_collide() {
         be.digest_basis(bal_a).unwrap(),
         be.digest_basis(bal_b).unwrap(),
         "two accounts minted the same amount must collide; if they do not, \
-         the premise of E27 has changed and this whole test is moot"
+         the premise of this test has changed and it is moot"
     );
     assert_eq!(be.oracle_uint(bal_a, &ck).unwrap(), 100);
 }
