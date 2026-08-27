@@ -21,20 +21,21 @@ import {TFHE, euint64, ebool} from "./TFHE.sol";
 /// "return the actual amount" convention is the same
 /// idea arrived at independently.
 ///
-/// ## Deferred by design (tracked as E8)
+/// ## Deferred by design
 ///
-/// Time-boxed operators, confidentialTransferFrom, and
-/// the AndCall family are not implemented. AndCall is a
+/// The AndCall family is not implemented. It is a
 /// reentrancy surface that interacts with first-writer-
 /// wins registration and wants review, not addition.
+/// Time-boxed operators and confidentialTransferFrom
+/// were deferred here too, and have since been added.
 ///
 /// ## Known-unsound dependency
 ///
 /// transferFromExternal admits a ciphertext through the
 /// input-proof path, which verifies nothing beyond non-
-/// emptiness (Track C / C1). Until C1 lands, an observer
-/// can replay an admitted ciphertext. Do not present
-/// this path as confidential in a demo.
+/// emptiness. Until input admission is made sound, an
+/// observer can replay an admitted ciphertext. Do not
+/// present this path as confidential in a demo.
 ///
 /// ## Shared-zero exposure — no contract-side defence
 ///
@@ -51,8 +52,8 @@ import {TFHE, euint64, ebool} from "./TFHE.sol";
 /// This contract cannot defend itself. A per-contract salt
 /// only moves the target, since CREATE addresses are
 /// predictable. The fix is the submitter entering the
-/// handle preimage — the change scoped for C1, which
-/// closes this and input-admission front-running together.
+/// handle preimage — the change that closes this and
+/// input-admission front-running together.
 /// Documented rather than mitigated, because a mitigation
 /// that reads like protection and isn't is worse than a
 /// stated exposure.
@@ -81,7 +82,7 @@ contract ConfidentialERC20 {
     /// are public through the getter, so without this the
     /// token computes on a victim's balance and grants the
     /// attacker read access to the result.
-    mapping(bytes32 => address) private _issuedTo;
+    mapping(bytes32 => mapping(address => bool)) private _issuedTo;
 
     error HandleNotIssuedToCaller(bytes32 handle);
     error TransferToZero();
@@ -182,7 +183,7 @@ contract ConfidentialERC20 {
     // ---- transfers ---------------------------------
 
     function confidentialTransfer(address to, bytes32 amount) external returns (bytes32) {
-        if (_issuedTo[amount] != msg.sender) {
+        if (!_issuedTo[amount][msg.sender]) {
             revert HandleNotIssuedToCaller(amount);
         }
         return _transfer(msg.sender, to, euint64.wrap(amount));
@@ -277,14 +278,20 @@ contract ConfidentialERC20 {
         return h;
     }
 
-    /// First write wins, mirroring the precompile's own
-    /// registration semantics. Re-recording would let a
-    /// later path silently reassign a handle's claimant.
+    /// Provenance is a SET, not a single claimant. Handles are
+    /// deterministic, so two honest accounts minted the same
+    /// amount derive the same balance handle; under the previous
+    /// first-write-wins rule the second was locked out of its own
+    /// balance. Recording is therefore additive and idempotent,
+    /// and the transfer paths test membership, not identity.
+    ///
+    /// INTERIM. This makes the collision survivable; it does not
+    /// address the root cause, which is that the handle preimage
+    /// omits the submitter, so identical operations by different
+    /// callers derive identical handles. Whether a shared handle
+    /// denotes one underlying balance or two is not yet settled.
     function _record(euint64 h, address account) private {
-        bytes32 raw = euint64.unwrap(h);
-        if (_issuedTo[raw] == address(0)) {
-            _issuedTo[raw] = account;
-        }
+        _issuedTo[euint64.unwrap(h)][account] = true; // idempotent
     }
 
     function _grantRead(euint64 handle, address account) private {
@@ -328,8 +335,7 @@ contract ConfidentialERC20 {
         if (msg.sender != from && !isOperator(from, msg.sender)) {
             revert NotAnOperator(from, msg.sender);
         }
-        address issued = _issuedTo[amount];
-        if (issued != from && issued != msg.sender) {
+        if (!_issuedTo[amount][from] && !_issuedTo[amount][msg.sender]) {
             revert HandleNotIssuedToCaller(amount);
         }
         return _transfer(from, to, euint64.wrap(amount));
