@@ -42,10 +42,19 @@ use crate::ics23_verify::{verify_slot, SlotOutcome};
 
 /// Domain separator for seat serving commitments. Versioned: bump on any
 /// change to the signing-bytes layout.
-pub const SERVE_DOMAIN: &[u8] = b"celar.kms.serve.v0";
+///
+/// v0 → v1 (2026-08-20): `epoch` added to the record and to the signed
+/// layout. The bump was free — no seat signatures existed yet — and the
+/// reason it is in the SIGNED bytes rather than alongside them: a seat must
+/// commit to WHICH key epoch it served under, or an accuser could re-point
+/// otherwise-valid evidence at a different epoch's archived commitments.
+pub const SERVE_DOMAIN: &[u8] = b"celar.kms.serve.v1";
 
 /// What a seat commits to when it decides to serve a request. The height
-/// pins WHICH chain state the seat claims authorized it.
+/// pins WHICH chain state the seat claims authorized it; the epoch pins
+/// WHICH key epoch (and therefore which archived seat commitments C_i^(e))
+/// the service happened under — without it, evidence cannot name its own
+/// archive entry, which breaks self-containment the moment a reshare lands.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestRecord {
     pub kind: RequestKind,
@@ -53,6 +62,8 @@ pub struct RequestRecord {
     pub handle: String,
     /// Requester address, 20 bytes hex (0x-prefixed).
     pub requester: String,
+    /// Key epoch the seat served under (genesis DKG = 0, §7.5 chain).
+    pub epoch: u64,
     /// CometBFT height of the header whose AppHash the ACL was proven under.
     pub header_height: u64,
     /// One-based committee role of the serving seat.
@@ -61,7 +72,7 @@ pub struct RequestRecord {
 
 impl RequestRecord {
     /// Canonical bytes the seat signs. Fixed layout, domain-separated:
-    /// tag ‖ kind ‖ handle(32) ‖ requester(20) ‖ height(8 BE) ‖ role(8 BE).
+    /// tag ‖ kind ‖ handle(32) ‖ requester(20) ‖ epoch(8 BE) ‖ height(8 BE) ‖ role(8 BE).
     pub fn signing_bytes(&self) -> Result<Vec<u8>> {
         let handle = hex::decode(self.handle.trim_start_matches("0x"))
             .context("record.handle is not hex")?;
@@ -70,7 +81,7 @@ impl RequestRecord {
         if handle.len() != 32 || requester.len() != 20 {
             anyhow::bail!("record field lengths wrong (handle 32B, requester 20B)");
         }
-        let mut out = Vec::with_capacity(SERVE_DOMAIN.len() + 1 + 32 + 20 + 16);
+        let mut out = Vec::with_capacity(SERVE_DOMAIN.len() + 1 + 32 + 20 + 24);
         out.extend_from_slice(SERVE_DOMAIN);
         out.push(match self.kind {
             RequestKind::Reencrypt => 0x01,
@@ -78,16 +89,89 @@ impl RequestRecord {
         });
         out.extend_from_slice(&handle);
         out.extend_from_slice(&requester);
+        out.extend_from_slice(&self.epoch.to_be_bytes());
         out.extend_from_slice(&self.header_height.to_be_bytes());
         out.extend_from_slice(&(self.seat_role as u64).to_be_bytes());
         Ok(out)
     }
 }
 
-/// Verifies a seat's signature over its serving commitment. The concrete
-/// scheme arrives with B2's key material; tests use a double.
+/// One seat's archived commitment for one epoch, as the chain retains it
+/// (§7.5: per-epoch C_i^(e) in chain state; the D7 store).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchivedSeatCommitment {
+    /// The seat's share commitment for that epoch (sha256 hex today,
+    /// matching `ReshareTranscript`; becomes the C_i the π-relation binds).
+    pub commitment_sha256: String,
+    /// Roster digest for that epoch. Roles are per-committee indices, so
+    /// across a membership change "role 3" alone names nobody — this binds
+    /// the role to an identity set.
+    pub roster_sha256: String,
+}
+
+/// Read seam over the chain's per-epoch commitment archive (engineer #1's
+/// D7 store; the eventual impl proves reads via ICS23 like every other
+/// chain fact the KMS consumes). The shape is the E25 answer: point read
+/// on (epoch, seat_role), plus two NEVER-pruned bounds that make absence
+/// decidable rather than inferred from a missing key.
+pub trait EpochCommitmentArchive {
+    /// (oldest_retained_epoch, latest_epoch). Both survive pruning.
+    fn bounds(&self) -> (u64, u64);
+    /// The commitment for one seat in one epoch, if retained.
+    fn commitment(&self, epoch: u64, seat_role: usize) -> Option<ArchivedSeatCommitment>;
+}
+
+/// Outcome of resolving an epoch against the archive. Three absence cases,
+/// three different meanings — collapsing them lets expired evidence read as
+/// forged (defaming an accuser) or forged evidence read as expired (excusing
+/// a fabrication).
+enum ArchiveResolution {
+    Found(ArchivedSeatCommitment),
+    /// epoch < oldest_retained: pruned past the §7.4 horizon. A verdict
+    /// about the evidence (time-barred), NOT corruption of it.
+    TimeBarred { oldest_retained: u64 },
+    /// epoch > latest: names an epoch the chain never established.
+    /// Malformed — errors, never convicts (framing resistance).
+    NeverExisted { latest: u64 },
+    /// In range but absent: should be impossible. An anomaly is an error,
+    /// never a conviction.
+    AnomalousGap,
+}
+
+fn resolve_epoch(
+    archive: &dyn EpochCommitmentArchive,
+    epoch: u64,
+    seat_role: usize,
+) -> ArchiveResolution {
+    let (oldest, latest) = archive.bounds();
+    if epoch < oldest {
+        return ArchiveResolution::TimeBarred {
+            oldest_retained: oldest,
+        };
+    }
+    if epoch > latest {
+        return ArchiveResolution::NeverExisted { latest };
+    }
+    match archive.commitment(epoch, seat_role) {
+        Some(c) => ArchiveResolution::Found(c),
+        None => ArchiveResolution::AnomalousGap,
+    }
+}
+
+/// Verifies a seat's signature over its serving commitment, against that
+/// seat's archived commitment FOR THE EPOCH THE RECORD NAMES — not the
+/// current one; that is the whole point of the archive. The concrete scheme
+/// arrives with B2's key material (and per the A-Q15 constraints it becomes
+/// a ZK relation, not a signature — this trait is the seam, and its shape
+/// already carries the commitment so the seam does not move again).
 pub trait SeatSignatureVerifier {
-    fn verify(&self, seat_role: usize, message: &[u8], signature: &[u8]) -> bool;
+    fn verify(
+        &self,
+        seat_role: usize,
+        epoch_commitment: &ArchivedSeatCommitment,
+        message: &[u8],
+        signature: &[u8],
+    ) -> bool;
 }
 
 /// One slot's canonical proof bundle inside evidence: the two ICS23 layers
@@ -134,6 +218,7 @@ pub enum FraudVerdict {
 pub fn verify_fraud(
     evidence: &FraudEvidence,
     root_source: AppHashSource,
+    archive: &dyn EpochCommitmentArchive,
     sig_verifier: &dyn SeatSignatureVerifier,
 ) -> Result<FraudVerdict> {
     // 1) E9 gate, strict: convictions demand a trusted root.
@@ -209,12 +294,56 @@ pub fn verify_fraud(
         }
     };
 
-    // 4) The seat must actually have committed to serving it.
+    // 4) Resolve the record's epoch against the commitment archive. Three
+    //    absence outcomes, three different verdicts — before any signature
+    //    work, so a time-barred claim never reaches the signature check.
+    let epoch_commitment =
+        match resolve_epoch(archive, evidence.record.epoch, evidence.record.seat_role) {
+            ArchiveResolution::Found(c) => c,
+            ArchiveResolution::TimeBarred { oldest_retained } => {
+                return Ok(FraudVerdict::NotFraud {
+                    why: format!(
+                        "time-barred: epoch {} is pruned past the retention horizon \
+                         (oldest retained: {}). This is expiry, explicitly NOT a \
+                         finding of forgery",
+                        evidence.record.epoch, oldest_retained
+                    ),
+                })
+            }
+            // Framing resistance: malformed and anomalous evidence ERRORS —
+            // it neither convicts the seat nor acquits the evidence.
+            ArchiveResolution::NeverExisted { latest } => {
+                anyhow::bail!(
+                    "malformed evidence: record names epoch {} but the chain has \
+                     only established epochs up to {}",
+                    evidence.record.epoch,
+                    latest
+                )
+            }
+            ArchiveResolution::AnomalousGap => {
+                anyhow::bail!(
+                    "archive anomaly: epoch {} is within the retained range but has \
+                     no commitment for seat {} — refusing to decide either way",
+                    evidence.record.epoch,
+                    evidence.record.seat_role
+                )
+            }
+        };
+
+    // 5) The seat must actually have committed to serving it — verified
+    //    against its commitment FOR THE EPOCH THE RECORD NAMES, which is
+    //    what keeps epoch-N evidence verifiable after the N+1 reshare.
     let msg = evidence.record.signing_bytes()?;
-    if !sig_verifier.verify(evidence.record.seat_role, &msg, &evidence.seat_signature) {
+    if !sig_verifier.verify(
+        evidence.record.seat_role,
+        &epoch_commitment,
+        &msg,
+        &evidence.seat_signature,
+    ) {
         return Ok(FraudVerdict::NotFraud {
-            why: "seat signature does not verify — no proof this seat served the \
-                  request (framing attempt or corrupt evidence)"
+            why: "seat signature does not verify against that epoch's archived \
+                  commitment — no proof this seat served the request (framing \
+                  attempt or corrupt evidence)"
                 .into(),
         });
     }
@@ -239,16 +368,29 @@ fn decode_fixed<const N: usize>(s: &str) -> Result<[u8; N]> {
 mod tests {
     use super::*;
 
-    /// Test double: signature = signing bytes XOR a per-role byte.
+    /// Test double: signature = (signing bytes XOR a per-role byte) ‖ the
+    /// commitment text the seat signed under. Verification checks BOTH the
+    /// role and that the presented archived commitment matches what was
+    /// signed under — which is exactly the property the archive exists for:
+    /// a signature made under epoch-N key material verifies against the
+    /// epoch-N archive entry and against nothing else.
     struct TestSigner;
     impl TestSigner {
-        fn sign(role: usize, msg: &[u8]) -> Vec<u8> {
-            msg.iter().map(|b| b ^ (role as u8)).collect()
+        fn sign(role: usize, commitment_text: &str, msg: &[u8]) -> Vec<u8> {
+            let mut out: Vec<u8> = msg.iter().map(|b| b ^ (role as u8)).collect();
+            out.extend_from_slice(commitment_text.as_bytes());
+            out
         }
     }
     impl SeatSignatureVerifier for TestSigner {
-        fn verify(&self, role: usize, msg: &[u8], sig: &[u8]) -> bool {
-            Self::sign(role, msg) == sig
+        fn verify(
+            &self,
+            role: usize,
+            epoch_commitment: &ArchivedSeatCommitment,
+            msg: &[u8],
+            sig: &[u8],
+        ) -> bool {
+            Self::sign(role, &epoch_commitment.commitment_sha256, msg) == sig
         }
     }
 
@@ -260,6 +402,7 @@ mod tests {
             kind,
             handle: HANDLE.into(),
             requester: REQUESTER.into(),
+            epoch: 5,
             header_height: 1002,
             seat_role: 3,
         }
@@ -267,7 +410,11 @@ mod tests {
 
     fn evidence(kind: RequestKind, sign_role: usize) -> FraudEvidence {
         let rec = record(kind);
-        let sig = TestSigner::sign(sign_role, &rec.signing_bytes().unwrap());
+        let sig = TestSigner::sign(
+            sign_role,
+            &TestArchive::commitment_text(rec.epoch, sign_role),
+            &rec.signing_bytes().unwrap(),
+        );
         FraudEvidence {
             record: rec,
             seat_signature: sig,
@@ -276,6 +423,36 @@ mod tests {
             // for these, or expect the proof error.
             meta_proof: SlotProofBundle { layers: vec![] },
             acl_proof: SlotProofBundle { layers: vec![] },
+        }
+    }
+
+    /// Test archive: epochs `oldest..=latest`, commitment text derived from
+    /// (epoch, role) so a reshare visibly changes every commitment.
+    struct TestArchive {
+        oldest: u64,
+        latest: u64,
+    }
+    impl TestArchive {
+        fn commitment_text(epoch: u64, role: usize) -> String {
+            format!("c-{epoch}-{role}")
+        }
+    }
+    impl EpochCommitmentArchive for TestArchive {
+        fn bounds(&self) -> (u64, u64) {
+            (self.oldest, self.latest)
+        }
+        fn commitment(&self, epoch: u64, seat_role: usize) -> Option<ArchivedSeatCommitment> {
+            ((self.oldest..=self.latest).contains(&epoch)).then(|| ArchivedSeatCommitment {
+                commitment_sha256: Self::commitment_text(epoch, seat_role),
+                roster_sha256: "roster-genesis".into(),
+            })
+        }
+    }
+
+    fn archive() -> TestArchive {
+        TestArchive {
+            oldest: 0,
+            latest: 6,
         }
     }
 
@@ -295,6 +472,7 @@ mod tests {
                 app_hash: [9u8; 32],
                 height: Some(1002),
             },
+            &archive(),
             &TestSigner,
         )
         .unwrap();
@@ -312,6 +490,7 @@ mod tests {
                 app_hash: [1u8; 32], // wrong root
                 height: 1002,
             },
+            &archive(),
             &TestSigner,
         )
         .unwrap();
@@ -323,6 +502,7 @@ mod tests {
                 app_hash: [9u8; 32],
                 height: 999, // wrong height
             },
+            &archive(),
             &TestSigner,
         )
         .unwrap();
@@ -333,7 +513,12 @@ mod tests {
     fn malformed_slot_proofs_are_an_error_not_a_conviction() {
         // With root/height matching, step 2 runs — and empty proof layers
         // must ERROR (invalid evidence), never convict.
-        let e = verify_fraud(&evidence(RequestKind::Reveal, 3), trusted_source(), &TestSigner);
+        let e = verify_fraud(
+            &evidence(RequestKind::Reveal, 3),
+            trusted_source(),
+            &archive(),
+            &TestSigner,
+        );
         assert!(e.is_err(), "malformed proofs must be an error: {e:?}");
     }
 
@@ -352,17 +537,113 @@ mod tests {
         let mut r = record(RequestKind::Reveal);
         r.seat_role = 4;
         assert_ne!(a, r.signing_bytes().unwrap(), "seat must alter the signed bytes");
+
+        // v1 addition: the epoch is in the SIGNED bytes. An unsigned epoch
+        // could be re-pointed at a different epoch's archived commitments.
+        let mut r = record(RequestKind::Reveal);
+        r.epoch = 4;
+        assert_ne!(a, r.signing_bytes().unwrap(), "epoch must alter the signed bytes");
+        assert!(a.starts_with(b"celar.kms.serve.v1"), "layout change requires the v1 domain");
     }
 
     #[test]
     fn wrong_seat_signature_is_framing_not_fraud() {
         // Signature made by role 2 presented as role 3's commitment: the
-        // signature check must fail — but we can only reach step 4 with
-        // valid proofs, so this exercises the verifier double directly.
+        // signature check must fail — exercises the verifier double directly.
         let rec = record(RequestKind::Reveal);
         let msg = rec.signing_bytes().unwrap();
-        let sig_by_2 = TestSigner::sign(2, &msg);
-        assert!(!TestSigner.verify(3, &msg, &sig_by_2));
-        assert!(TestSigner.verify(2, &msg, &sig_by_2));
+        let c2 = archive().commitment(rec.epoch, 2).unwrap();
+        let c3 = archive().commitment(rec.epoch, 3).unwrap();
+        let sig_by_2 = TestSigner::sign(2, &c2.commitment_sha256, &msg);
+        assert!(!TestSigner.verify(3, &c3, &msg, &sig_by_2));
+        assert!(TestSigner.verify(2, &c2, &msg, &sig_by_2));
+    }
+
+    // ---- E23: the archive resolution verdicts ----------------------------
+
+    #[test]
+    fn pruned_epoch_is_time_barred_not_forged() {
+        // Archive retains 4..=6; the record names epoch 2. Time-barred is a
+        // NotFraud VERDICT with the reason stated — never an error, never a
+        // forgery finding.
+        let mut ev = evidence(RequestKind::Reveal, 3);
+        ev.record.epoch = 2;
+        ev.seat_signature = TestSigner::sign(
+            3,
+            &TestArchive::commitment_text(2, 3),
+            &ev.record.signing_bytes().unwrap(),
+        );
+        let arch = TestArchive { oldest: 4, latest: 6 };
+        // Reaching step 4 needs valid slot proofs, which these fixtures do
+        // not have — so exercise the resolution directly, as the proof-layer
+        // tests do for their step.
+        match resolve_epoch(&arch, ev.record.epoch, ev.record.seat_role) {
+            ArchiveResolution::TimeBarred { oldest_retained } => {
+                assert_eq!(oldest_retained, 4)
+            }
+            _ => panic!("expected TimeBarred, got a different resolution"),
+        }
+    }
+
+    #[test]
+    fn future_epoch_is_malformed_and_anomalous_gap_is_an_error() {
+        let arch = archive(); // 0..=6
+        assert!(matches!(
+            resolve_epoch(&arch, 7, 3),
+            ArchiveResolution::NeverExisted { latest: 6 }
+        ));
+        // In range but absent: a hole the chain should make impossible.
+        struct HoleyArchive;
+        impl EpochCommitmentArchive for HoleyArchive {
+            fn bounds(&self) -> (u64, u64) {
+                (0, 6)
+            }
+            fn commitment(&self, _: u64, _: usize) -> Option<ArchivedSeatCommitment> {
+                None
+            }
+        }
+        assert!(matches!(
+            resolve_epoch(&HoleyArchive, 5, 3),
+            ArchiveResolution::AnomalousGap
+        ));
+    }
+
+    #[test]
+    fn epoch_n_evidence_survives_the_n_plus_1_reshare() {
+        // THE E23 regression: the case that silently failed before the
+        // archive existed. A seat serves under epoch 5; the committee
+        // reshares to epoch 6, every live commitment changes; the epoch-5
+        // evidence must STILL verify — against the ARCHIVED epoch-5
+        // commitment, not the current one.
+        let rec = record(RequestKind::Reveal); // epoch 5, role 3
+        let msg = rec.signing_bytes().unwrap();
+        let sig = TestSigner::sign(3, &TestArchive::commitment_text(5, 3), &msg);
+
+        // After the reshare the archive spans 0..=6. The epoch-5 entry is
+        // retained and unchanged; epoch 6's differs (commitment text derives
+        // from the epoch, mirroring reshare.rs's all-commitments-change).
+        let arch = archive(); // latest = 6
+        let c5 = arch.commitment(5, 3).unwrap();
+        let c6 = arch.commitment(6, 3).unwrap();
+        assert_ne!(c5, c6, "reshare must have changed the live commitment");
+
+        // Against the archived epoch-5 commitment: verifies.
+        assert!(TestSigner.verify(3, &c5, &msg, &sig));
+
+        // Against the CURRENT (epoch-6) commitment: fails — which is
+        // exactly what happened to ALL old evidence before the archive,
+        // because current state was the only commitment available.
+        assert!(
+            !TestSigner.verify(3, &c6, &msg, &sig),
+            "pre-archive behaviour: epoch-N evidence checked against current \
+             commitments — this failing is WHY the archive exists"
+        );
+
+        // And the full resolution path picks the archived entry from the
+        // record's own epoch field — self-containment.
+        match resolve_epoch(&arch, rec.epoch, rec.seat_role) {
+            ArchiveResolution::Found(c) => assert_eq!(c, c5),
+            _ => panic!("epoch 5 must resolve to its archived commitment"),
+        }
     }
 }

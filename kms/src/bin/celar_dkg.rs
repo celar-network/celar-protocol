@@ -31,10 +31,19 @@ enum Cmd {
         /// JSON CommitteeConfig file; overrides --parties/--preproc.
         #[arg(long)]
         config: Option<PathBuf>,
-        /// Offline phase: dummy (dev, seconds) | secure (real MPC offline
-        /// phase — ceremony-grade, long wall-clock).
+        /// Offline phase: dummy (dev, seconds) | secure (real, PRSS,
+        /// small committees only) | secure-large (real, genesis-scale).
         #[arg(long, default_value = "dummy")]
         preproc: String,
+        /// secure-large offline chunk size (triples/randoms per
+        /// sub-protocol run). Trades peak memory against rounds.
+        #[arg(long, default_value_t = 2048)]
+        preproc_chunk: usize,
+        /// Override the upstream session corruption bound t. The
+        /// secure-large path requires c ≥ 4t+1 (t < n/4), stricter than
+        /// the ⌊(c−1)/3⌋ default — e.g. c=13 needs t ≤ 3.
+        #[arg(long)]
+        session_threshold: Option<usize>,
         /// Output directory.
         #[arg(long, default_value = "dkg-out")]
         out: PathBuf,
@@ -120,6 +129,8 @@ async fn main() -> Result<()> {
             parties,
             config,
             preproc,
+            preproc_chunk,
+            session_threshold,
             out,
             write_dev_keys,
         } => {
@@ -134,10 +145,13 @@ async fn main() -> Result<()> {
                     preprocessing: match preproc.as_str() {
                         "dummy" => PreprocMode::Dummy,
                         "secure" => PreprocMode::Secure,
+                        "secure-large" => PreprocMode::SecureLarge,
                         other => anyhow::bail!(
-                            "unknown --preproc {other:?} (expected dummy | secure)"
+                            "unknown --preproc {other:?} (expected dummy | secure | secure-large)"
                         ),
                     },
+                    preproc_chunk,
+                    session_threshold,
                     ..Default::default()
                 },
             };

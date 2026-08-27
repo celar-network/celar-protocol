@@ -184,10 +184,21 @@ impl CommitteeRoster {
             params: self.params,
             preprocessing: match self.mode {
                 // Genesis ceremonies never run on dummy preprocessing.
+                //
+                // ⚠️ KNOWN-WRONG mapping, kept deliberately for one more
+                // unit: `Secure` is the PRSS path, hard-capped at
+                // binom(n,t) ≤ 2047 — it CANNOT run at genesis scale
+                // (binom(30,9) ≈ 14.3M). The correct target is
+                // `SecureLarge`, but that requires t ≤ ⌊(c−1)/4⌋ (the n/4
+                // corruption bound, W41), so switching it changes what
+                // session_threshold this function must derive and what
+                // the roster tests assert. Scheduled as its own change,
+                // not smuggled into a compile fix.
                 CommitteeMode::PermissionedGenesis => PreprocMode::Secure,
                 CommitteeMode::Dev => PreprocMode::Secure,
             },
             preproc_seed: 42,
+            preproc_chunk: 512,
         };
         cfg.validate()?;
         Ok(cfg)
