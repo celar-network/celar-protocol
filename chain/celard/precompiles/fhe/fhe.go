@@ -29,7 +29,7 @@ var abiJSON string
 //
 // allow / requestReencrypt / requestReveal are STATEFUL: they run through
 // RunNativeAction (G5 journaled path) and emit cosmos events. Real ACL
-// storage is task D1.6; real KMS semantics are Track B.
+// storage is a separate task; real KMS semantics live in the KMS.
 type Precompile struct {
 	cmn.Precompile
 	abi abi.ABI
