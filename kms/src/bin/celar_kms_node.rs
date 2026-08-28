@@ -23,7 +23,7 @@ use celar_kms::node::{
 use celar_kms::transcript::{PartyRecord, Transcript};
 
 #[derive(Parser)]
-#[command(name = "celar-kms-node", version, about = "Celar Track B — KMS ceremony node (H2)")]
+#[command(name = "celar-kms-node", version, about = "Celar KMS — networked ceremony node (gRPC/mTLS)")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,

@@ -74,9 +74,12 @@ for i in 1 2 3 4; do ./target/release/celar_kms_node run --config ceremony/node_
   `core1.party1`; IPs are rejected for TLS.
 - **Round timeouts are load-bearing:** heavy MPC compute between sync rounds
   drops shares at default timeouts (`round_timeout_secs`, default 600).
-- **tfhe pin:** this tree pins **=1.6.1** (kms workspace pin); Track A's
-  backend uses 1.7.0. Separate trees, no conflict — ciphertext-format
-  reconciliation is flagged for B2.
+- **tfhe pin:** this tree pins **=1.7.0**, via the upstream kms revision
+  `main@c6b0fdd3` — the same tfhe version the compute backend uses, so no
+  ciphertext-format reconciliation is needed between them. *(Historical
+  note: the tree originally pinned =1.6.1 at upstream v0.13.22; the re-pin
+  is recorded in `Cargo.toml`. Re-pin to the next upstream release tag once
+  one ships on 1.7.x.)*
 - The reconstruction-quorum ↔ upstream sharing-degree mapping is an **open
   §7.1 spec question** carried in `src/config.rs` — attach no security claims
   to the quorum number until it is resolved.

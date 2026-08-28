@@ -41,7 +41,7 @@ use celar_kms::ics23_verify::{self, SlotOutcome};
 use celar_kms::mpt::{keccak256, storage_word, verify_proof, ProofOutcome};
 
 #[derive(Parser)]
-#[command(name = "celar-acl-verify", version, about = "Celar Track B — G10 ACL proof spike")]
+#[command(name = "celar-acl-verify", version, about = "Celar KMS — ACL state-proof verifier")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,

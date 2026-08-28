@@ -14,7 +14,7 @@ use celar_kms::dkg::run_local_dkg;
 use celar_kms::transcript::Transcript;
 
 #[derive(Parser)]
-#[command(name = "celar-dkg", version, about = "Celar Track B — DKG (B1 skeleton)")]
+#[command(name = "celar-dkg", version, about = "Celar KMS — distributed key generation")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
