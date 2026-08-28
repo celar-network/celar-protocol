@@ -24,7 +24,7 @@ const (
 )
 
 // Plaintext type tags stored in handleMeta[h], and emitted as the op-steams
-// `resultType` field once A6 lands.
+// `resultType` field once the typed-handle work lands.
 //
 // Log-coded rather than raw bit width: euint -> 3 -- euint64 -> 6, i.e.
 // log2(bits). Compact, leaves room for wider types, and matches

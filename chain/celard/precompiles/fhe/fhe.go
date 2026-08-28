@@ -20,15 +20,15 @@ import (
 //go:embed abi.json
 var abiJSON string
 
-// Precompile implements the Celar FHE precompile stub (task D1.5).
+// Precompile implements the Celar FHE precompile stub.
 //
 // Compute ops (add/sub/le/lt/eq/and/or/not/select/cast) and trivialEncrypt
 // are STATELESS: the returned handle is a deterministic hash of the inputs.
 // They never touch RunNativeAction, so they never count against
-// MaxPrecompileCalls (S4).
+// MaxPrecompileCalls.
 //
 // allow / requestReencrypt / requestReveal are STATEFUL: they run through
-// RunNativeAction (G5 journaled path) and emit cosmos events. Real ACL
+// RunNativeAction (the journaled path) and emit cosmos events. Real ACL
 // storage is a separate task; real KMS semantics live in the KMS.
 type Precompile struct {
 	cmn.Precompile
@@ -114,7 +114,7 @@ func (p Precompile) Run(
 			p.resultKType(evm.StateDB, method, argBz), readonly)
 		return method.Outputs.Pack(h)
 
-	// ---- stateful: ACL + KMS gateway (G5 journaled path) ------------------
+	// ---- stateful: ACL + KMS gateway (journaled path) --------------------
 	case AllowMethod:
 		if readonly {
 			return nil, vm.ErrWriteProtection
