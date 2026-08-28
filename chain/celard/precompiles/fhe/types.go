@@ -28,7 +28,7 @@ const (
 	RequestRevealMethod    = "requestReveal"
 )
 
-// Flat stub gas costs per op group. Real 2-D fee metering is task D4.
+// Flat stub gas costs per op group. Real 2-D fee metering is a separate task.
 const (
 	GasCompute  uint64 = 3_000
 	GasInput    uint64 = 10_000

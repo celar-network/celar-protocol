@@ -34,7 +34,7 @@ func unpackHandle(
 func TestExternalAdmissionIsAccepted(t *testing.T) {
 	tk := deployToken(t)
 
-	// The proof is not verified yet (C1) — the precompile
+	// The proof is not verified yet — the precompile
 	// checks only that it is non-empty. This asserts the
 	// admission path works and records provenance, NOT
 	// that admission is sound. It is not.

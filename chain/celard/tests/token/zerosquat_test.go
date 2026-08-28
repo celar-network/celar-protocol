@@ -25,7 +25,7 @@ import (
 // The contract cannot defend itself. A per-contract salt
 // only moves the target, because CREATE addresses are
 // predictable. The fix is the submitter entering the
-// handle preimage — the same change scoped for C1 in
+// handle preimage — the same change scoped for input admission in
 // doc/engg/celar-c1-input-proof-scope.md section 3, which
 // closes this and the input-admission front-running
 // together.

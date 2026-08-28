@@ -69,7 +69,7 @@ library TFHE {
     /// first-writer-wins with no revocation. Any account
     /// can claim it for one call and permanently break
     /// every contract that later needs it. Until the
-    /// submitter enters the preimage (C1), this is an
+    /// submitter enters the preimage, this is an
     /// exposure, not a convenience — see the shared-zero
     /// note in ConfidentialERC20.sol.
     function asEuint64(uint64 value) internal returns (euint64) {
