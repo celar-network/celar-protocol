@@ -68,10 +68,14 @@ pub enum PreprocMode {
     /// `SecureLargePreprocessing` — the real large-session offline phase
     /// (VSS + coinflip + single/double sharing; no PRSS, no party-count
     /// cap; flooding masks carry no `binom` factor). **This is what a
-    /// genesis ceremony must run.** Caveat, stated because it matters:
+    /// genesis ceremony must run.** Caveats, stated because they matter:
     /// upstream ships this path tested to n=13 but their own production
     /// server never invokes it — we are its first production consumer, so
-    /// the cross-party pk_G equality check is load-bearing here.
+    /// the cross-party pk_G equality check is load-bearing here. And the
+    /// corruption bound is **t < n/4** (enforced in `validate()` as a
+    /// safety interlock, not a convenience): beyond it, reconstruction can
+    /// be steered to a silently wrong result — the vendor declined the
+    /// dispute-resolution extension that would make it fail closed.
     SecureLarge,
 }
 
@@ -184,13 +188,28 @@ impl CommitteeConfig {
         if self.parties < 2 {
             bail!("committee needs at least 2 parties (got {})", self.parties);
         }
+        // ⛔ SAFETY INTERLOCK — do not weaken to a warning, ever.
+        //
         // The large-session offline path robust-opens DEGREE-2t values, so
         // it requires n ≥ 4t + 1 — a stricter corruption bound (t < n/4)
         // than the classic t < n/3 the session-threshold default assumes.
         // Upstream's own test committees for this path are exactly (5,1),
-        // (9,2), (13,3). Without this guard the failure surfaces as
-        // "Could not reconstruct the sharing" deep in the library, on the
-        // first open, with nothing pointing at the threshold.
+        // (9,2), (13,3).
+        //
+        // Why refusal is the only acceptable behaviour: the vendor
+        // DELIBERATELY DECLINED the dispute-resolution extension for this
+        // protocol (eprint 2025/699, p.4 §2.1 — "relatively complex, and so
+        // we decided not to pursue this extension"), so reconstruction is
+        // error-corrected degree-2t opening with NO post-reconstruction
+        // commitment cross-check. Beyond the bound, a malicious excess
+        // corruptor can steer an opening into a different codeword's
+        // decoding sphere: the failure mode is SILENTLY INCORRECT OUTPUT —
+        // a bad key that looks like a good one — not a detectable abort.
+        // In the honest-but-misconfigured case the symptom is merely
+        // "Could not reconstruct the sharing" deep in the library; in the
+        // adversarial case there is no symptom at all. This check is the
+        // only thing standing between a misconfigured ceremony and a
+        // silently bad key.
         if self.preprocessing == PreprocMode::SecureLarge
             && self.parties <= 4 * self.session_threshold()
         {
@@ -199,7 +218,9 @@ impl CommitteeConfig {
                  got c={} with t_session={} (need c ≥ {}). Either lower \
                  session_threshold explicitly (large-path corruption bound is \
                  t < n/4, not n/3 — e.g. t ≤ 7 at c=30, t ≤ 24 at c=100) or \
-                 grow the committee.",
+                 grow the committee. This bound is a safety interlock: beyond \
+                 it, reconstruction can be steered to a silently wrong result \
+                 rather than an abort.",
                 self.parties,
                 self.session_threshold(),
                 4 * self.session_threshold() + 1
