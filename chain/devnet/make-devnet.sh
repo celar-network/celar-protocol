@@ -15,6 +15,14 @@ echo "1) init $N node homes (EVM chain-id $EVM_CHAIN_ID)"
 for i in $(seq 0 $((N-1))); do
   $BIN init "celar-node$i" --chain-id "$CHAIN_ID" --home "$ROOT/node$i" >/dev/null
   sed -i 's/type = "flood"/type = "app"/' "$ROOT/node$i/config/config.toml"           # EVM mempool needs type=app
+  # CometBFT 0.39 ships an experimental go-libp2p transport (QUIC, WebTransport,
+  # WebRTC + STUN NAT traversal), linked into the binary and off by default. Pin it
+  # off explicitly: a default that happens to be right is not a setting we chose,
+  # and this is the D1.4 shape — there, disabling the ICS20 precompile did not
+  # disable the IBC transfer module, and only pinning both at generation time made
+  # every devnet inherit the intent.
+  sed -i -E '/^\[p2p\.libp2p\]/,/^\[/ s/^([[:space:]]*enabled[[:space:]]*=).*/\1 false/' \
+    "$ROOT/node$i/config/config.toml"
   APP="$ROOT/node$i/config/app.toml"
   sed -i -E "s/^([[:space:]]*evm-chain-id[[:space:]]*=).*/\\1 $EVM_CHAIN_ID/" "$APP"    # EVM chain-id (MetaMask)
   sed -i -E 's/^(minimum-gas-prices[[:space:]]*=).*/\1 "0ncelar"/' "$APP"               # zero-fee devnet
