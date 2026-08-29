@@ -99,7 +99,7 @@ func (p Precompile) Run(
 		if len(proof) == 0 {
 			return nil, errors.New("fhe precompile: empty proof rejected")
 		}
-		h := p.deriveHandle(method, argBz)
+		h := p.deriveAdmissionHandle(method, argBz, evm.Origin)
 		p.registerHandle(evm.StateDB, h, contract.Caller(),
 			KTypeUnknown, readonly)
 		return method.Outputs.Pack(h)
@@ -154,6 +154,40 @@ func (p Precompile) deriveHandle(
 	preimage := make([]byte, 0, len(domainTag)+len(method.Name)+len(argBz))
 	preimage = append(preimage, []byte(domainTag)...)
 	preimage = append(preimage, []byte(method.Name)...)
+	preimage = append(preimage, argBz...)
+	return crypto.Keccak256Hash(preimage)
+}
+
+// deriveAdmissionHandle computes the handle for an admitted input:
+//
+//	handle = keccak256(domainTag || methodName || submitter || rawArgs)
+//
+// The submitter is the transaction origin — the same principal the
+// corrected input-proof tuple binds, and deliberately not the immediate
+// caller, which is usually a contract and identical for all its users.
+//
+// Without it, two parties supplying the same (ciphertext, proof) derive
+// the same handle, and first-writer-wins hands ownership to whoever lands
+// first: the front-running path, demonstrated in frontrun_test.go.
+//
+// Compute ops deliberately do NOT bind a principal. Equal values reached
+// by identical traces therefore still share a handle, which is a
+// confidentiality property tracked separately — binding compute results
+// would change what every coprocessor must reproduce.
+//
+// Note on the concatenation: the preimage carries no length prefixes, so
+// it is unambiguous only because no method name is a prefix of another.
+// That holds for the current set; a new method must preserve it.
+func (p Precompile) deriveAdmissionHandle(
+	method *abi.Method,
+	argBz []byte,
+	submitter common.Address,
+) common.Hash {
+	preimage := make([]byte, 0,
+		len(domainTag)+len(method.Name)+common.AddressLength+len(argBz))
+	preimage = append(preimage, []byte(domainTag)...)
+	preimage = append(preimage, []byte(method.Name)...)
+	preimage = append(preimage, submitter.Bytes()...)
 	preimage = append(preimage, argBz...)
 	return crypto.Keccak256Hash(preimage)
 }
