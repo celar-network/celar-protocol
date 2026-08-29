@@ -225,9 +225,27 @@ impl Backend {
     /// `into_raw_parts` consumes the value, so this clones. The cost
     /// is paid once per attested result, not per operation.
     pub fn digest_basis(&self, h: Handle) -> Res<Vec<u8>> {
-        let (ct, _) = self.uint(h)?;
-        let (radix, _id, _tag, _rerand) = ct.clone().into_raw_parts();
-        bincode::serialize(&radix).map_err(|_| FheError::MalformedCiphertext)
+        match self.store.get(&h) {
+            Some(Ct::Uint { ct, .. }) => {
+                let (radix, _id, _tag, _rerand) = ct.clone().into_raw_parts();
+                bincode::serialize(&radix).map_err(|_| FheError::MalformedCiphertext)
+            }
+            // Booleans need a digest too: the frozen interface attests every
+            // evaluated op and codes a result type for ebool, and under the
+            // branchless rule a comparison result is an ordinary handle on
+            // its way into select. Previously this returned ExpectedUint,
+            // so those results were unattestable.
+            //
+            // FheBool's raw part is a single shortint block with no wrapper
+            // id, tag or re-randomization member — so unlike the integer
+            // case there is nothing to exclude, and the whole raw part is
+            // the basis.
+            Some(Ct::Bool(ct)) => {
+                let block = ct.clone().into_raw_parts();
+                bincode::serialize(&block).map_err(|_| FheError::MalformedCiphertext)
+            }
+            None => Err(FheError::UnknownHandle(h)),
+        }
     }
 
     /// Admit a client-supplied ciphertext.
