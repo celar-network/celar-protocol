@@ -99,6 +99,11 @@ fn fingerprint() {
     println!("FINGERPRINT add    {}", digest(&be, sum));
     println!("FINGERPRINT sub    {}", digest(&be, dif));
     println!("FINGERPRINT select {}", digest(&be, sel));
+    // The comparison result is a handle like any other, and the interface
+    // attests every evaluated op. It was computed here all along and never
+    // digested — printing it would have failed until the boolean arm
+    // existed, so the missing line and the missing arm were one gap.
+    println!("FINGERPRINT le     {}", digest(&be, cmp));
     let _ = ck;
 }
 

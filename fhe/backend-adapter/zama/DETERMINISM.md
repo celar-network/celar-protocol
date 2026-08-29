@@ -21,6 +21,19 @@ it is deterministic, giving every machine an identical starting ciphertext).
 add 849a75d4a4d8c66320709df1cc550016e980c15a3aca5ac340970b19df6709bf
 sub f9aaa247ff013815857ae8664d9729d35ca3fa90d344a1a815640fcc4c6d7cce
 select 2bd6f509e1d432abe4d0e98b920c34fc2c48420f38a96e236d8124c3383ebe08
+le e771ad484477fe8846732e23162740866e78bc78820f812d155f32c74aac75df
+
+**`le` is new (2026-08-28) and the other three are unchanged**, which is the
+point: the boolean basis was added without moving the integer one. For a
+boolean the raw part is a single shortint block with no wrapper members, so
+unlike the integer case there is nothing to exclude — the whole raw part is
+the basis.
+
+*Why it was missing.* Every reference value was uint-producing, so no fixture
+could fail on the boolean class, and digesting a boolean returned an error
+rather than a wrong answer. The test had in fact computed `le` all along and
+never printed it — printing it would have failed. **A fixture set that cannot
+fail on a class does not test that class**, and this one could not.
 
 ### ⚠️ Basis change 2026-08-20 — these values changed; the computation did not
 
@@ -58,6 +71,32 @@ than assumed.*
 
 
 TFHE-rs 1.7.0, release profile, CPU **without** AVX-512 (Intel Ultra 7 258V).
+
+## What the digest binds — measured 2026-08-28
+
+**The basis binds how a value was computed, not only what it is.**
+`tests/radix_basis.rs`: adding a trivially encrypted zero leaves the value and
+the body arithmetic alone, yet moves **32 bytes — one per block, at a fixed
+stride** — with the length unchanged. The per-block bookkeeping (degree, noise
+level, moduli) is inside the digested bytes.
+
+Sharper still: trivial encryptions are noiseless, so `sub(trivial 12,
+trivial 7)` has the same mask and the same body as `trivial 5` — a
+cryptographically identical ciphertext. **It digests differently.**
+
+Two consequences, both stronger than anything this file said before:
+
+**1. Identical library versions are consensus-critical, not recommended.** Any
+upstream change to how bookkeeping is tracked moves every digest without
+moving any value. This is a hard-fork-class coupling and belongs in the frozen
+interface rather than here.
+
+**2. A coprocessor must not optimise — including semantics-preserving
+optimisations.** Constant-folding, skipping a provable no-op, or reassociating
+yields a *correct result with a different digest*, which is indistinguishable
+from cheating. That is the same failure the wrapper-field exclusion removed,
+one level deeper: honest disagreement the fraud game cannot tell apart from
+fraud.
 
 ## Reproducing
 
