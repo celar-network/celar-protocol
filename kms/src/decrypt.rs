@@ -34,12 +34,16 @@ use algebra::galois_rings::common::ResiduePoly;
 // Both groups therefore come from `decryption`.)
 use threshold_execution::endpoints::decryption::{
     run_decryption_noiseflood_64, OfflineNoiseFloodSession, RadixOrBoolCiphertext,
-    SecureOnlineNoiseFloodDecryption, SmallOfflineNoiseFloodSession, SnsDecryptionKeyType,
-    SnsRadixOrBoolCiphertext,
+    SecureNoiseFloodLargeSession, SecureOnlineNoiseFloodDecryption,
+    SmallOfflineNoiseFloodSession, SnsDecryptionKeyType, SnsRadixOrBoolCiphertext,
 };
+use threshold_execution::runtime::sessions::base_session::GenericBaseSessionHandles;
+use threshold_execution::runtime::sessions::large_session::LargeSession;
 use threshold_execution::runtime::sessions::session_parameters::GenericParameterHandles;
 use threshold_execution::runtime::sessions::small_session::SmallSession;
-use threshold_execution::tests::helper::tests_and_benches::execute_protocol_small;
+use threshold_execution::tests::helper::tests_and_benches::{
+    execute_protocol_large, execute_protocol_small,
+};
 use threshold_execution::tfhe_internals::private_keysets::PrivateKeySet;
 use threshold_execution::tfhe_internals::public_keysets::FhePubKeySet;
 use threshold_types::network::NetworkMode;
@@ -67,6 +71,40 @@ pub struct DecryptReport {
 
 pub const DECRYPT_SCHEMA: &str = "celar-decrypt-report/v0";
 
+/// The flooding parameter of the PRODUCTION decrypt path, declared HERE —
+/// next to the code that runs it — and consumed by `budget.rs`'s mirror
+/// test. The budget's λ_stat must equal what the deployed decrypt path
+/// actually floods with; anchoring the number in this module (rather than
+/// to the library constant in the abstract) means a future path change
+/// breaks the mirror test instead of silently un-backing the budget.
+///
+/// Production = the LARGE-session TUniform path: it is the only path that
+/// reaches genesis scale (the PRSS path is hard-capped at binom(n,t) ≤ 2047)
+/// AND the only one whose ceiling admits 50 (no binom factor in its mask).
+pub const PRODUCTION_FLOODING_STATSEC: u32 = threshold_execution::constants::STATSEC_TUNIFORM;
+
+/// Which session family runs the threshold decryption.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecryptSession {
+    /// Large session, TUniform flooding at `STATSEC_TUNIFORM` (= 50 on the
+    /// celar fork). THE PRODUCTION PATH — scales to genesis, backs the
+    /// §7.2 budget.
+    Large,
+    /// Small session, PRSS flooding at `STATSEC` (= 40). Dev/comparison
+    /// only: hard-capped at small committees and does NOT back the budget.
+    SmallDev,
+}
+
+impl DecryptSession {
+    pub fn parse(s: &str) -> Result<Self> {
+        match s {
+            "large" => Ok(Self::Large),
+            "small" => Ok(Self::SmallDev),
+            other => bail!("unknown --session {other:?} (expected large | small)"),
+        }
+    }
+}
+
 pub struct DecryptOutput {
     pub report: DecryptReport,
 }
@@ -78,6 +116,7 @@ pub async fn run_local_threshold_decrypt(
     keys_dir: &Path,
     shares_dir: &Path,
     value: u64,
+    session_kind: DecryptSession,
     out_path: &Path,
 ) -> Result<DecryptOutput> {
     // Committee shape from the genesis transcript beside the pk.
@@ -88,6 +127,22 @@ pub async fn run_local_threshold_decrypt(
         ..Default::default()
     };
     cfg.validate()?;
+    // The large path's noiseflood preprocessing is SecureLargePreprocessing,
+    // which robust-opens degree-2t values — the same n ≥ 4t+1 safety
+    // interlock as the DKG's secure-large mode, refused here at entry
+    // rather than five layers down. c=4 fixtures need --session small (dev)
+    // or c ≥ 5 keys.
+    if session_kind == DecryptSession::Large && parties <= 4 * cfg.session_threshold() {
+        bail!(
+            "--session large requires parties ≥ 4·t_session + 1 (got c={}, t={}): \
+             the TUniform offline phase robust-opens degree-2t values. Re-key with \
+             c ≥ {} or use --session small (dev only — floods at 40, does NOT back \
+             the §7.2 budget).",
+            parties,
+            cfg.session_threshold(),
+            4 * cfg.session_threshold() + 1
+        );
+    }
 
     // pk_G: FhePubKeySet { public_key (compact), server_key } from the DKG.
     let pk_bytes = fs::read(keys_dir.join(PK_FILE))
@@ -131,60 +186,114 @@ pub async fn run_local_threshold_decrypt(
     let large_ct = Arc::new(large_ct);
     let num_blocks = small_ct.len();
 
-    // 3) n-party noise-flooded threshold decryption.
+    // 3) n-party noise-flooded threshold decryption, on the selected path.
     let shares_dir_owned = shares_dir.to_path_buf();
     let started = Instant::now();
-    let mut task = |session: SmallSession<ResiduePoly<Z128, EXTENSION_DEGREE>>,
-                    _info: Option<String>| {
-        let shares_dir = shares_dir_owned.clone();
-        let large_ct = large_ct.clone();
-        async move {
-            let role = session.my_role().one_based();
-            let share_bytes = fs::read(shares_dir.join(share_file(role)))
-                .expect("reading share file (dev keys required)");
-            let share: PrivateKeySet<EXTENSION_DEGREE> =
-                bincode::deserialize(&share_bytes).expect("deserializing share");
 
-            let mut nf_session = SmallOfflineNoiseFloodSession::new(session);
-            let preproc = nf_session
-                .init_prep_noiseflooding(num_blocks)
-                .await
-                .expect("noise-flood preprocessing failed");
+    let mut results = match session_kind {
+        DecryptSession::SmallDev => {
+            let mut task = |session: SmallSession<ResiduePoly<Z128, EXTENSION_DEGREE>>,
+                            _info: Option<String>| {
+                let shares_dir = shares_dir_owned.clone();
+                let large_ct = large_ct.clone();
+                async move {
+                    let role = session.my_role().one_based();
+                    let share_bytes = fs::read(shares_dir.join(share_file(role)))
+                        .expect("reading share file (dev keys required)");
+                    let share: PrivateKeySet<EXTENSION_DEGREE> =
+                        bincode::deserialize(&share_bytes).expect("deserializing share");
 
-            let out = run_decryption_noiseflood_64::<
-                EXTENSION_DEGREE,
-                _,
-                _,
-                SecureOnlineNoiseFloodDecryption,
-            >(
-                nf_session.session.get_mut(),
-                Arc::new(Mutex::new(preproc)),
-                Arc::new(share),
-                large_ct,
-                SnsDecryptionKeyType::SnsKey,
+                    let mut nf_session = SmallOfflineNoiseFloodSession::new(session);
+                    let preproc = nf_session
+                        .init_prep_noiseflooding(num_blocks)
+                        .await
+                        .expect("noise-flood preprocessing failed");
+
+                    let out = run_decryption_noiseflood_64::<
+                        EXTENSION_DEGREE,
+                        _,
+                        _,
+                        SecureOnlineNoiseFloodDecryption,
+                    >(
+                        nf_session.session.get_mut(),
+                        Arc::new(Mutex::new(preproc)),
+                        Arc::new(share),
+                        large_ct,
+                        SnsDecryptionKeyType::SnsKey,
+                    )
+                    .await
+                    .expect("threshold decryption failed");
+
+                    (role, out.0)
+                }
+            };
+            execute_protocol_small::<_, _, ResiduePoly<Z128, EXTENSION_DEGREE>, EXTENSION_DEGREE>(
+                cfg.parties,
+                cfg.session_threshold() as u8,
+                None,
+                NetworkMode::Sync,
+                None,
+                &mut task,
+                None,
             )
             .await
-            .expect("threshold decryption failed");
+        }
+        DecryptSession::Large => {
+            // The production path: large session, real TUniform flooding at
+            // STATSEC_TUNIFORM via SecureLargePreprocessing. Sync mode + the
+            // widened round timeout, same reasons as the DKG's secure-large
+            // path (heavy offline compute between sync rounds; a dev run
+            // time-slices all c parties on one machine).
+            let mut task = |mut session: LargeSession| {
+                let shares_dir = shares_dir_owned.clone();
+                let large_ct = large_ct.clone();
+                async move {
+                    let role = session.my_role().one_based();
+                    let share_bytes = fs::read(shares_dir.join(share_file(role)))
+                        .expect("reading share file (dev keys required)");
+                    let share: PrivateKeySet<EXTENSION_DEGREE> =
+                        bincode::deserialize(&share_bytes).expect("deserializing share");
 
-            (role, out.0)
+                    session
+                        .network()
+                        .set_timeout_for_next_round(std::time::Duration::from_secs(600))
+                        .await;
+
+                    let mut nf_session = SecureNoiseFloodLargeSession::new(session);
+                    let preproc = nf_session
+                        .init_prep_noiseflooding(num_blocks)
+                        .await
+                        .expect("noise-flood preprocessing failed (large/TUniform path)");
+
+                    let out = run_decryption_noiseflood_64::<
+                        EXTENSION_DEGREE,
+                        _,
+                        _,
+                        SecureOnlineNoiseFloodDecryption,
+                    >(
+                        nf_session.session.get_mut(),
+                        Arc::new(Mutex::new(preproc)),
+                        Arc::new(share),
+                        large_ct,
+                        SnsDecryptionKeyType::SnsKey,
+                    )
+                    .await
+                    .expect("threshold decryption failed");
+
+                    (role, out.0)
+                }
+            };
+            execute_protocol_large::<_, _, ResiduePoly<Z128, EXTENSION_DEGREE>, EXTENSION_DEGREE>(
+                cfg.parties,
+                cfg.session_threshold(),
+                None,
+                NetworkMode::Sync,
+                None,
+                &mut task,
+            )
+            .await
         }
     };
-
-    let mut results = execute_protocol_small::<
-        _,
-        _,
-        ResiduePoly<Z128, EXTENSION_DEGREE>,
-        EXTENSION_DEGREE,
-    >(
-        cfg.parties,
-        cfg.session_threshold() as u8,
-        None,
-        NetworkMode::Sync,
-        None,
-        &mut task,
-        None,
-    )
-    .await;
     let wall_secs = started.elapsed().as_secs_f64();
 
     if results.len() != parties {
@@ -205,15 +314,30 @@ pub async fn run_local_threshold_decrypt(
         }
     }
 
+    let (mode, lambda_stat, flooding_params) = match session_kind {
+        DecryptSession::Large => (
+            "NoiseFloodLarge (TUniform, production)".to_string(),
+            // Characterised at last — by the E22(a) margin analysis, not by
+            // assumption: ceiling 50 with 2x headroom on this path
+            // (tasks/B3/02 §9), deployed via the celar fork.
+            "50 (STATSEC_TUNIFORM, celar fork; ceiling analysis in the margin note)",
+            "TUniform(120) x2 summed; mask < 2^121, margin 2^122",
+        ),
+        DecryptSession::SmallDev => (
+            "NoiseFloodSmall (PRSS, DEV — does not back the budget)".to_string(),
+            "40 (PRSS path ceiling at PRSS_SIZE_MAX; dev/comparison only)",
+            "PRSS mask, binom(n,t) factor; at its ceiling by design",
+        ),
+    };
     let report = DecryptReport {
         schema: DECRYPT_SCHEMA.to_string(),
-        mode: "NoiseFloodSmall".to_string(),
+        mode,
         parties,
         value_expected: value,
         recovered: results,
         wall_secs,
-        lambda_stat: "UNCHARACTERISED (upstream parameter set; not derived here)",
-        flooding_params: "UNCHARACTERISED (upstream defaults for the DKG param set)",
+        lambda_stat,
+        flooding_params,
     };
     fs::write(out_path, serde_json::to_string_pretty(&report)?)?;
     Ok(DecryptOutput { report })

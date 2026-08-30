@@ -87,6 +87,12 @@ enum Cmd {
         /// Fixture plaintext to encrypt and threshold-decrypt.
         #[arg(long, default_value_t = 42)]
         value: u64,
+        /// Session family: large (PRODUCTION — TUniform flooding at 50,
+        /// scales to genesis, backs the §7.2 budget; needs c ≥ 4t+1) |
+        /// small (DEV — PRSS at 40, small committees, does not back the
+        /// budget).
+        #[arg(long, default_value = "large")]
+        session: String,
         #[arg(long, default_value = "decrypt-report.json")]
         out: PathBuf,
     },
@@ -228,17 +234,24 @@ async fn main() -> Result<()> {
             keys_dir,
             shares_dir,
             value,
+            session,
             out,
         } => {
             let shares = shares_dir.clone().unwrap_or_else(|| keys_dir.clone());
+            let session_kind = celar_kms::decrypt::DecryptSession::parse(&session)?;
             eprintln!(
-                "celar-dkg: threshold decrypt (NoiseFloodSmall) — pk from {}, shares from {}",
+                "celar-dkg: threshold decrypt (session={session}) — pk from {}, shares from {}",
                 keys_dir.display(),
                 shares.display()
             );
-            let outcome =
-                celar_kms::decrypt::run_local_threshold_decrypt(&keys_dir, &shares, value, &out)
-                    .await?;
+            let outcome = celar_kms::decrypt::run_local_threshold_decrypt(
+                &keys_dir,
+                &shares,
+                value,
+                session_kind,
+                &out,
+            )
+            .await?;
             println!(
                 "DECRYPT-OK mode={} parties={} value={} ALL-AGREE wall={:.1}s report {}",
                 outcome.report.mode,
