@@ -76,15 +76,18 @@ pub const LAMBDA_TARGET: u32 = 40;
 /// because the spec text names it, and [`BudgetParams::validate`] refuses it.
 pub const LAMBDA_STAT_PREFERRED: u32 = 64;
 
-/// The flooding parameter the deployed library actually compiles
-/// (`threshold-execution` `STATSEC`). The budget's λ_stat MUST equal this:
-/// a budget computed from a larger λ_stat enforces a ceiling the flooding
-/// does not provide — arithmetically correct and physically meaningless.
+/// The flooding parameter of the PRODUCTION decrypt path — the number this
+/// budget is physically backed by. The budget's λ_stat MUST equal it: a
+/// budget computed from a larger value enforces a ceiling the flooding does
+/// not provide; a smaller one wastes real capacity.
 ///
-/// Mirrored as a local constant and asserted against the upstream export in
-/// a test, so a silent upstream change fails the build's test run rather
-/// than silently invalidating every budget in force.
-pub const UPSTREAM_STATSEC: u32 = 40;
+/// 50 as of the decrypt-path switch (2026-08-29): the production path is
+/// the large-session TUniform route (`decrypt::DecryptSession::Large`,
+/// the default), flooding at `STATSEC_TUNIFORM = 50` via the celar fork.
+/// Mirror-tested against BOTH `decrypt::PRODUCTION_FLOODING_STATSEC` (so a
+/// decrypt-path change breaks the suite, not the budget's honesty) and the
+/// fork's exported constant (so an upstream change does the same).
+pub const DEPLOYED_FLOODING_STATSEC: u32 = 50;
 
 /// Hard ceiling on any future λ_stat, from the decryption margin — NOT a
 /// tunable. Decryption rounds at Δ = 2^123 with message+carry in bits
@@ -119,15 +122,15 @@ pub struct BudgetParams {
 
 impl BudgetParams {
     /// Default parameters for a given Q_max: sub-budget = Q_max/64,
-    /// λ_target = 40, and λ_stat = **what the library provides**
-    /// ([`UPSTREAM_STATSEC`]), not the spec's preferred 64 — defaulting to a
-    /// value the flooding does not back was the defect the cross-check in
-    /// [`Self::validate`] exists to refuse.
+    /// λ_target = 40, and λ_stat = **what the production decrypt path
+    /// provides** ([`DEPLOYED_FLOODING_STATSEC`]), not the spec's preferred
+    /// 64 — defaulting to a value the flooding does not back was the defect
+    /// the cross-check in [`Self::validate`] exists to refuse.
     pub fn with_q_max(q_max: u64) -> Self {
         Self {
             q_max,
             per_contract_max: (q_max / SUB_BUDGET_DIVISOR).max(1),
-            lambda_stat: UPSTREAM_STATSEC,
+            lambda_stat: DEPLOYED_FLOODING_STATSEC,
             lambda_target: LAMBDA_TARGET,
         }
     }
@@ -150,18 +153,17 @@ impl BudgetParams {
         // The λ cross-check: the configured flooding parameter must be the
         // one the deployed library provides. Refusal, not clamping — a
         // silently adjusted budget is a budget the operator believes wrongly.
-        if self.lambda_stat != UPSTREAM_STATSEC {
+        if self.lambda_stat != DEPLOYED_FLOODING_STATSEC {
             bail!(
                 "λ_stat ({}) is not the flooding parameter the deployed \
-                 library provides (STATSEC = {}). A budget computed from a \
-                 larger λ_stat enforces a ceiling the flooding does not back; \
-                 one computed from a smaller value wastes real capacity. \
-                 Either is a misconfiguration. Note the decryption margin \
-                 caps λ_stat at {} permanently (Δ/2 = 2^122 vs a mask of \
-                 2^(71+λ_stat)); raising the library constant past that \
-                 corrupts plaintexts silently.",
+                 production decrypt path provides ({}). A budget computed \
+                 from a larger λ_stat enforces a ceiling the flooding does \
+                 not back; one computed from a smaller value wastes real \
+                 capacity. Either is a misconfiguration. Note the decryption \
+                 margin caps λ_stat at {} permanently (Δ/2 = 2^122 vs a mask \
+                 of 2^(71+λ_stat)); exceeding it corrupts plaintexts silently.",
                 self.lambda_stat,
-                UPSTREAM_STATSEC,
+                DEPLOYED_FLOODING_STATSEC,
                 MAX_SAFE_LAMBDA_STAT
             );
         }
@@ -347,13 +349,12 @@ impl EpochBudget {
 mod tests {
     use super::*;
 
-    /// Test fixture for admission-mechanics tests. λ_target is lowered to 30
-    /// so that the library's real λ_stat = 40 yields 2^10 of headroom and
-    /// `validate()` passes on its true code path. This is a FIXTURE: §7.2
-    /// fixes λ_target = 40, and under the real pair (40, 40) no budget
-    /// validates — `current_truth_no_valid_budget_exists_yet` pins that.
-    /// The mechanics under test (charging, refusal, reset, counters) do not
-    /// depend on the pair's values.
+    /// Test fixture for admission-mechanics tests. Historically this
+    /// lowered λ_target because no configuration validated at the real pair
+    /// (40, 40); at the deployed (50, 40) the real headroom is 2^10 and the
+    /// fixture is no longer load-bearing — kept only so mechanics tests
+    /// have extra room and never couple to the ceiling. The mechanics under
+    /// test (charging, refusal, reset, counters) do not depend on the pair.
     fn mech_params(q_max: u64) -> BudgetParams {
         let mut p = BudgetParams::with_q_max(q_max);
         p.lambda_target = 30;
@@ -361,14 +362,22 @@ mod tests {
     }
 
     #[test]
-    fn upstream_statsec_mirror_is_current() {
-        // If upstream changes STATSEC, this fails the test run instead of
-        // silently invalidating every budget in force.
+    fn deployed_flooding_statsec_mirror_is_current() {
+        // Two anchors, two failure modes caught: if the DECRYPT PATH changes
+        // what it floods with, the first assert fails; if the FORK's
+        // constant changes underneath us, the second does. Either way the
+        // suite breaks instead of the budget silently un-backing.
         assert_eq!(
-            UPSTREAM_STATSEC,
-            threshold_execution::constants::STATSEC,
-            "upstream STATSEC changed — re-derive MAX_SAFE_LAMBDA_STAT and \
-             re-run the E22(a) margin analysis before updating the mirror"
+            DEPLOYED_FLOODING_STATSEC,
+            crate::decrypt::PRODUCTION_FLOODING_STATSEC,
+            "the production decrypt path's flooding parameter changed — \
+             re-run the margin analysis before updating this mirror"
+        );
+        assert_eq!(
+            DEPLOYED_FLOODING_STATSEC,
+            threshold_execution::constants::STATSEC_TUNIFORM,
+            "the fork's TUniform constant changed — re-derive the ceiling \
+             before updating this mirror"
         );
     }
 
@@ -394,18 +403,18 @@ mod tests {
     }
 
     #[test]
-    fn current_truth_no_valid_budget_exists_yet() {
-        // With the library at STATSEC = 40 and λ_target fixed at 40, the
-        // honest state is that NO budget configuration validates: λ_stat
-        // equals λ_target, leaving zero oracle budget. This test pins that
-        // truth. When the STATSEC 40 → 50 raise lands upstream (or as a
-        // fork), UPSTREAM_STATSEC moves to 50, this test starts failing,
-        // and the replacement assertion is: with_q_max(1024) validates and
-        // with_q_max(1025) is refused.
-        let p = BudgetParams::with_q_max(1);
-        let err = p.validate().unwrap_err().to_string();
-        assert!(err.contains("no budget at all"), "{err}");
-        assert!(p.lambda_stat == UPSTREAM_STATSEC);
+    fn the_shipped_budget_is_finally_real() {
+        // The replacement assertion pre-written into this test's
+        // predecessor (`current_truth_no_valid_budget_exists_yet`) the day
+        // it was pinned, now activated: with the production decrypt path
+        // flooding at 50 against λ_target = 40, the §7.2 ceiling is
+        // 2^10 = 1024 — and the published number, the fork constant and
+        // this enforcement finally agree.
+        BudgetParams::with_q_max(1024).validate().unwrap();
+        let mut over = BudgetParams::with_q_max(1025);
+        over.per_contract_max = 1;
+        let err = over.validate().unwrap_err().to_string();
+        assert!(err.contains("flooding ceiling"), "{err}");
     }
 
     #[test]
@@ -515,14 +524,16 @@ mod tests {
 
     #[test]
     fn accumulated_distance_tracks_the_flooding_argument() {
-        // Q·2^−λ_stat at the library's real λ_stat = 40: after 2^9 ops the
-        // exponent is 9 − 40 = −31, inside the fixture's λ_target = 30.
+        // Q·2^−λ_stat at the deployed λ_stat: after 2^9 ops the exponent is
+        // 9 − λ, computed from the constant rather than a literal so this
+        // test cannot silently desynchronise from the mirror again.
         let mut b = EpochBudget::new(1, mech_params(1024)).unwrap();
         for i in 0..512 {
             b.admit(&format!("0x{}", i % 64), BudgetedOp::Reveal).unwrap();
         }
         let log2_dist = b.accumulated_distance_log2();
-        assert!((log2_dist - (9.0 - 40.0)).abs() < 1e-9);
-        assert!(log2_dist < -30.0);
+        let expected = 9.0 - DEPLOYED_FLOODING_STATSEC as f64;
+        assert!((log2_dist - expected).abs() < 1e-9);
+        assert!(log2_dist < -(LAMBDA_TARGET as f64));
     }
 }
