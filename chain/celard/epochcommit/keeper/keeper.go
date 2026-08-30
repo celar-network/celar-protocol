@@ -198,3 +198,70 @@ func (k Keeper) IterateEntries(
 	}
 	return nil
 }
+
+// SetEpochHorizon records the height past which this epoch's evidence is no
+// longer punishable. Written once, when the epoch is recorded, and never
+// recomputed.
+func (k Keeper) SetEpochHorizon(ctx sdk.Context, epoch uint64, expiryHeight uint64) {
+	ctx.KVStore(k.storeKey).Set(types.HorizonKey(epoch), u64(expiryHeight))
+}
+
+// GetEpochHorizon reports the stored horizon, and whether one exists.
+func (k Keeper) GetEpochHorizon(ctx sdk.Context, epoch uint64) (uint64, bool) {
+	return readU64(ctx.KVStore(k.storeKey).Get(types.HorizonKey(epoch)))
+}
+
+// PruneExpired advances the retention bound past every epoch whose horizon
+// has passed, then deletes boundedly.
+//
+// An epoch with NO stored horizon stops the sweep. Refusing to prune what
+// cannot be shown expired is the safe direction: retaining evidence too long
+// costs storage, whereas discarding it early destroys punishability with no
+// way to recover it — and would present as time-barred, which exonerates.
+//
+// The bound never advances past the latest epoch: an archive must not end up
+// declaring its own newest epoch beyond the horizon.
+func (k Keeper) PruneExpired(
+	ctx sdk.Context, currentHeight uint64, maxDeletes int,
+) (advancedTo uint64, deleted int) {
+	oldest, latest, ok := k.Bounds(ctx)
+	if !ok {
+		return 0, 0
+	}
+	newOldest := oldest
+	for e := oldest; e < latest; e++ {
+		h, found := k.GetEpochHorizon(ctx, e)
+		if !found || h > currentHeight {
+			break
+		}
+		newOldest = e + 1
+	}
+	if newOldest == oldest {
+		return oldest, 0
+	}
+	return newOldest, k.PruneBelow(ctx, newOldest, maxDeletes)
+}
+
+// IterateHorizons walks every stored horizon in epoch order.
+func (k Keeper) IterateHorizons(
+	ctx sdk.Context, cb func(epoch uint64, expiryHeight uint64) bool,
+) error {
+	store := ctx.KVStore(k.storeKey)
+	it := storetypes.KVStorePrefixIterator(store, types.HorizonPrefix)
+	defer it.Close()
+	for ; it.Valid(); it.Next() {
+		key := it.Key()
+		if len(key) != len(types.HorizonPrefix)+8 {
+			return fmt.Errorf("malformed horizon key of length %d", len(key))
+		}
+		h, ok := readU64(it.Value())
+		if !ok {
+			return fmt.Errorf("horizon for epoch %d does not decode",
+				binary.BigEndian.Uint64(key[len(types.HorizonPrefix):]))
+		}
+		if !cb(binary.BigEndian.Uint64(key[len(types.HorizonPrefix):]), h) {
+			return nil
+		}
+	}
+	return nil
+}

@@ -671,6 +671,9 @@ func NewExampleApp(
 		authz.ModuleName, feegrant.ModuleName,
 		consensusparamtypes.ModuleName,
 		vestingtypes.ModuleName,
+		// Prunes epoch commitments past the punishability horizon. Order is
+		// immaterial: it reads and writes only its own store.
+		epochcommittypes.ModuleName,
 	)
 
 	// NOTE: the feemarket module should go last in order of end blockers that are actually doing something,

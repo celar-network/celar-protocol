@@ -1,6 +1,7 @@
 package epochcommit
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -24,10 +25,11 @@ import (
 const ConsensusVersion = 1
 
 var (
-	_ module.AppModule      = AppModule{} //nolint:staticcheck // keep for legacy purposes
-	_ module.AppModuleBasic = AppModuleBasic{}
-	_ module.HasABCIGenesis = AppModule{}
-	_ appmodule.AppModule   = AppModule{}
+	_ module.AppModule          = AppModule{} //nolint:staticcheck // keep for legacy purposes
+	_ module.AppModuleBasic     = AppModuleBasic{}
+	_ module.HasABCIGenesis     = AppModule{}
+	_ appmodule.AppModule       = AppModule{}
+	_ appmodule.HasBeginBlocker = AppModule{}
 )
 
 // ----------------------------------------------------------------------------
@@ -106,6 +108,27 @@ func (am AppModule) InitGenesis(
 
 func (am AppModule) ExportGenesis(ctx sdk.Context, cdc codec.JSONCodec) json.RawMessage {
 	return cdc.MustMarshalJSON(ExportGenesis(ctx, am.keeper))
+}
+
+// MaxPrunesPerBlock bounds the sweep so it cannot stall a block. Whatever is
+// left is deleted next block, and is already reported as time-barred by the
+// bound meanwhile — the bound advances before deletion, so the lag is safe.
+const MaxPrunesPerBlock = 100
+
+// BeginBlock advances the retention horizon past epochs whose punishability
+// window has closed, and deletes boundedly.
+//
+// An epoch with no recorded horizon stops the sweep rather than being treated
+// as expired: retaining evidence too long costs storage, discarding it early
+// destroys punishability and presents as expiry, which exonerates.
+func (am AppModule) BeginBlock(ctx context.Context) error {
+	sdkCtx := sdk.UnwrapSDKContext(ctx)
+	height := sdkCtx.BlockHeight()
+	if height < 0 {
+		return nil
+	}
+	am.keeper.PruneExpired(sdkCtx, uint64(height), MaxPrunesPerBlock)
+	return nil
 }
 
 // IsAppModule implements the appmodule.AppModule interface.

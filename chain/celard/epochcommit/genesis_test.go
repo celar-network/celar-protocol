@@ -101,3 +101,28 @@ func TestDefaultGenesisIsValidAndEmpty(t *testing.T) {
 		t.Fatal("default genesis is not an empty, boundless archive")
 	}
 }
+
+// Horizons must survive export and import. Without them a restored chain
+// cannot prune, and — worse — cannot show why it is not pruning: every epoch
+// would look like one whose horizon was never recorded.
+func TestHorizonsSurviveRoundTrip(t *testing.T) {
+	k, ctx := newKeeper(t)
+	in := types.NewGenesisState([]types.ArchiveEntry{
+		{Epoch: 4, SeatRole: 1, Commitment: commitment("a")},
+	}, true, 4, 4)
+	in.Horizons = []types.EpochHorizon{
+		{Epoch: 4, ExpiryHeight: 9000},
+	}
+	if err := in.Validate(); err != nil {
+		t.Fatalf("fixture invalid: %v", err)
+	}
+	epochcommit.InitGenesis(ctx, k, in)
+
+	if h, ok := k.GetEpochHorizon(ctx, 4); !ok || h != 9000 {
+		t.Fatalf("horizon not imported: got %d ok=%v", h, ok)
+	}
+	out := epochcommit.ExportGenesis(ctx, k)
+	if len(out.Horizons) != 1 || out.Horizons[0].ExpiryHeight != 9000 {
+		t.Fatalf("horizon lost on export: %+v", out.Horizons)
+	}
+}

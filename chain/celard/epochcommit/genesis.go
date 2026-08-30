@@ -23,6 +23,9 @@ func InitGenesis(ctx sdk.Context, k keeper.Keeper, gs *types.GenesisState) {
 			panic(err)
 		}
 	}
+	for _, h := range gs.Horizons {
+		k.SetEpochHorizon(ctx, h.Epoch, h.ExpiryHeight)
+	}
 	if gs.BoundsSet {
 		k.InitBounds(ctx, gs.OldestRetainedEpoch, gs.LatestEpoch)
 	}
@@ -40,6 +43,17 @@ func ExportGenesis(ctx sdk.Context, k keeper.Keeper) *types.GenesisState {
 	}); err != nil {
 		panic(err)
 	}
+	var horizons []types.EpochHorizon
+	if err := k.IterateHorizons(ctx, func(epoch, expiry uint64) bool {
+		horizons = append(horizons, types.EpochHorizon{
+			Epoch: epoch, ExpiryHeight: expiry,
+		})
+		return true
+	}); err != nil {
+		panic(err)
+	}
 	oldest, latest, ok := k.Bounds(ctx)
-	return types.NewGenesisState(entries, ok, oldest, latest)
+	gs := types.NewGenesisState(entries, ok, oldest, latest)
+	gs.Horizons = horizons
+	return gs
 }

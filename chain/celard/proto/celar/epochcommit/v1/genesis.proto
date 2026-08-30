@@ -20,6 +20,15 @@ message ArchiveEntry {
 // them is what makes evidence from that epoch read as time-barred rather than
 // as naming an epoch that never existed. Deriving bounds from a shortened
 // entry list would turn exoneration into a forgery finding.
+// EpochHorizon is the height past which an epoch's evidence is no longer
+// punishable. Chain-local bookkeeping: it is deliberately NOT part of
+// ArchivedSeatCommitment, whose four fields are the canonical encoding agreed
+// with the reader, and it is not on the proof path.
+message EpochHorizon {
+  uint64 epoch = 1;
+  uint64 expiry_height = 2;
+}
+
 message GenesisState {
   repeated ArchiveEntry entries = 1 [(gogoproto.nullable) = false];
 
@@ -29,4 +38,8 @@ message GenesisState {
   bool bounds_set = 2;
   uint64 oldest_retained_epoch = 3;
   uint64 latest_epoch = 4;
+
+  // Carried explicitly: without them a restored chain cannot prune, and
+  // cannot show why it is not pruning.
+  repeated EpochHorizon horizons = 5 [(gogoproto.nullable) = false];
 }
