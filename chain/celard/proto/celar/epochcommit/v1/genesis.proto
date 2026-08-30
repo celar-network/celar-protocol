@@ -1,0 +1,32 @@
+syntax = "proto3";
+package celar.epochcommit.v1;
+
+import "celar/epochcommit/v1/archive.proto";
+import "gogoproto/gogo.proto";
+
+option go_package = "github.com/cosmos/evm/evmd/epochcommit/types";
+
+// ArchiveEntry is one stored commitment together with the key it lives under.
+message ArchiveEntry {
+  uint64 epoch = 1;
+  uint32 seat_role = 2;
+  ArchivedSeatCommitment commitment = 3 [(gogoproto.nullable) = false];
+}
+
+// GenesisState is the whole archive plus its retention bounds.
+//
+// The bounds are carried explicitly rather than derived from the entries.
+// Once an epoch has been pruned its entries are gone, but the horizon above
+// them is what makes evidence from that epoch read as time-barred rather than
+// as naming an epoch that never existed. Deriving bounds from a shortened
+// entry list would turn exoneration into a forgery finding.
+message GenesisState {
+  repeated ArchiveEntry entries = 1 [(gogoproto.nullable) = false];
+
+  // Whether the bounds below are meaningful. A chain that has never keyed an
+  // epoch has no horizon, and zero is a legitimate epoch number, so absence
+  // cannot be encoded as zero.
+  bool bounds_set = 2;
+  uint64 oldest_retained_epoch = 3;
+  uint64 latest_epoch = 4;
+}

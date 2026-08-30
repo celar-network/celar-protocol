@@ -159,3 +159,42 @@ func (k Keeper) PruneBelow(ctx sdk.Context, newOldest uint64, maxDeletes int) (d
 	}
 	return len(stale)
 }
+
+// InitBounds sets both bounds directly, for genesis import.
+//
+// SetCommitment moves bounds as a side effect, but only upward: it raises the
+// latest epoch and never lowers the retention horizon. That is what keeps an
+// imported archive whose lower epochs were already pruned from reacquiring a
+// horizon at its oldest surviving entry, which would turn time-barred
+// evidence into an anomaly. The guard is in SetCommitment, not in the order
+// these are called.
+func (k Keeper) InitBounds(ctx sdk.Context, oldest, latest uint64) {
+	k.setBounds(ctx, oldest, latest)
+}
+
+// IterateEntries walks every stored entry in key order.
+func (k Keeper) IterateEntries(
+	ctx sdk.Context,
+	cb func(epoch uint64, seatRole uint32, entry types.ArchivedSeatCommitment) bool,
+) error {
+	store := ctx.KVStore(k.storeKey)
+	it := storetypes.KVStorePrefixIterator(store, types.EntryPrefix)
+	defer it.Close()
+	for ; it.Valid(); it.Next() {
+		key := it.Key()
+		if len(key) != len(types.EntryPrefix)+12 {
+			return fmt.Errorf("malformed entry key of length %d", len(key))
+		}
+		epoch := binary.BigEndian.Uint64(key[len(types.EntryPrefix):])
+		role := binary.BigEndian.Uint32(key[len(types.EntryPrefix)+8:])
+		var entry types.ArchivedSeatCommitment
+		if err := entry.Unmarshal(it.Value()); err != nil {
+			return fmt.Errorf("entry (epoch %d, seat %d) does not decode: %w",
+				epoch, role, err)
+		}
+		if !cb(epoch, role, entry) {
+			return nil
+		}
+	}
+	return nil
+}

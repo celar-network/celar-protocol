@@ -112,3 +112,35 @@ func TestPruneAdvancesTheBoundBeforeDeleting(t *testing.T) {
 		t.Fatal("an undeleted entry below the horizon is not yet time-barred")
 	}
 }
+
+// The property that actually protects the retention horizon. Writing an entry
+// inside the retained range must not drag the lower bound down to it: evidence
+// from an already-pruned epoch has to keep reading as time-barred, which
+// exonerates, rather than as never-established, which accuses.
+//
+// This was written after a mutation check showed the test it replaces could
+// not fail — the ordering it claimed to verify turned out not to matter, and
+// this guard is what does the work.
+func TestSetCommitmentNeverLowersTheHorizon(t *testing.T) {
+	k, ctx := newKeeper(t)
+	k.InitBounds(ctx, 5, 9)
+
+	if err := k.SetCommitment(ctx, 7, 1, entry("a")); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	oldest, latest, _ := k.Bounds(ctx)
+	if oldest != 5 {
+		t.Fatalf("writing epoch 7 lowered the horizon to %d", oldest)
+	}
+	if latest != 9 {
+		t.Fatalf("writing inside the range moved the upper bound to %d", latest)
+	}
+
+	// And a write above the range does raise the upper bound.
+	if err := k.SetCommitment(ctx, 12, 1, entry("b")); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if _, latest, _ = k.Bounds(ctx); latest != 12 {
+		t.Fatalf("a newer epoch did not raise the upper bound, latest=%d", latest)
+	}
+}
