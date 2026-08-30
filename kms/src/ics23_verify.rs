@@ -57,7 +57,9 @@ pub fn looks_like_ics23(bytes: &[u8]) -> bool {
     matches!(bytes.first(), Some(0x0a | 0x12 | 0x1a | 0x22))
 }
 
-/// Verify one storage slot against the AppHash through both ICS23 layers.
+/// Verify one EVM storage slot against the AppHash through both ICS23
+/// layers. Thin wrapper over [`verify_key_in_store`] fixing the store to
+/// `"evm"` and the key to the EVM state-key layout.
 ///
 /// `proof_bytes` are the raw (hex-decoded) entries of one `storageProof[i].proof`
 /// array, in RPC order: `[iavl, multistore]`.
@@ -65,6 +67,24 @@ pub fn verify_slot(
     app_hash: &[u8; 32],
     address: &[u8; 20],
     slot: &[u8; 32],
+    proof_bytes: &[Vec<u8>],
+) -> Result<SlotOutcome> {
+    verify_key_in_store(app_hash, EVM_STORE_NAME, &state_key(address, slot), proof_bytes)
+}
+
+/// Verify one key in a NAMED module store against the AppHash through both
+/// ICS23 layers.
+///
+/// Generalised from the EVM-only original (2026-08-29): the epoch-commitment
+/// archive lives in its own native module store (`"epochcommit"`), whose keys
+/// are module keys rather than address‖slot — the store name and raw key are
+/// therefore parameters. The hard-coded `"evm"` here was one assumed store
+/// name away from re-creating the original proof-format surprise from the
+/// verifier side.
+pub fn verify_key_in_store(
+    app_hash: &[u8; 32],
+    store_name: &[u8],
+    key: &[u8],
     proof_bytes: &[Vec<u8>],
 ) -> Result<SlotOutcome> {
     if proof_bytes.len() != 2 {
@@ -77,7 +97,7 @@ pub fn verify_slot(
         .context("decoding layer 0 as ics23 CommitmentProof (iavl)")?;
     let multistore = CommitmentProof::decode(proof_bytes[1].as_slice())
         .context("decoding layer 1 as ics23 CommitmentProof (multistore)")?;
-    let key = state_key(address, slot);
+    let key = key.to_vec();
 
     // Layer 0: (non)existence under the evm store root. The store root is
     // recomputed from the proof itself and only becomes trustworthy once
@@ -100,7 +120,7 @@ pub fn verify_slot(
                 &key,
                 &e.value,
             ) {
-                bail!("iavl membership verification failed for slot 0x{}", hex::encode(slot));
+                bail!("iavl membership verification failed for key 0x{}", hex::encode(&key));
             }
             (root, SlotOutcome::Present(storage_word(&e.value)?))
         }
@@ -135,8 +155,8 @@ pub fn verify_slot(
                 &key,
             ) {
                 bail!(
-                    "iavl non-membership verification failed for slot 0x{}",
-                    hex::encode(slot)
+                    "iavl non-membership verification failed for key 0x{}",
+                    hex::encode(&key)
                 );
             }
             (root, SlotOutcome::Absent)
@@ -144,18 +164,19 @@ pub fn verify_slot(
         _ => bail!("unsupported ics23 proof shape in layer 0 (batch/compressed)"),
     };
 
-    // Layer 1: the evm store root must be committed under the AppHash. The
-    // store entry always exists on a running chain.
+    // Layer 1: the named store's root must be committed under the AppHash.
+    // The store entry always exists on a running chain.
     match multistore
         .proof
         .as_ref()
         .context("empty multistore CommitmentProof")?
     {
         Proof::Exist(e) => {
-            if e.key != EVM_STORE_NAME {
+            if e.key != store_name {
                 bail!(
-                    "multistore proof is for store {:?}, expected \"evm\"",
-                    String::from_utf8_lossy(&e.key)
+                    "multistore proof is for store {:?}, expected {:?}",
+                    String::from_utf8_lossy(&e.key),
+                    String::from_utf8_lossy(store_name)
                 );
             }
         }
@@ -165,13 +186,14 @@ pub fn verify_slot(
         &multistore,
         &ics23::tendermint_spec(),
         &app_hash.to_vec(),
-        EVM_STORE_NAME,
+        store_name,
         &store_root,
     ) {
         bail!(
-            "multistore verification failed: evm store root 0x{} is not \
+            "multistore verification failed: store {:?} root 0x{} is not \
              committed under AppHash 0x{} — wrong header height? (proofs at \
-             EVM block H verify against the header at H+1)",
+             state height H verify against the header at H+1)",
+            String::from_utf8_lossy(store_name),
             hex::encode(&store_root),
             hex::encode(app_hash)
         );

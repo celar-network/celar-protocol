@@ -620,7 +620,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 [[package]]
 name = "bc2wrap"
 version = "2.0.1"
-source = "git+https://github.com/zama-ai/kms.git?rev=c6b0fdd39e37ceb68edfae86d521c39dc0d50d46#c6b0fdd39e37ceb68edfae86d521c39dc0d50d46"
+source = "git+https://github.com/celar-network/kms.git?rev=8015482e5ef14a2f57b1f792e584a7fa0533d728#8015482e5ef14a2f57b1f792e584a7fa0533d728"
 dependencies = [
  "bincode 2.0.1",
  "serde",
@@ -1445,7 +1445,7 @@ dependencies = [
 [[package]]
 name = "error-utils"
 version = "0.15.0-0"
-source = "git+https://github.com/zama-ai/kms.git?rev=c6b0fdd39e37ceb68edfae86d521c39dc0d50d46#c6b0fdd39e37ceb68edfae86d521c39dc0d50d46"
+source = "git+https://github.com/celar-network/kms.git?rev=8015482e5ef14a2f57b1f792e584a7fa0533d728#8015482e5ef14a2f57b1f792e584a7fa0533d728"
 dependencies = [
  "anyhow",
  "tracing",
@@ -2568,7 +2568,7 @@ dependencies = [
 [[package]]
 name = "observability"
 version = "0.15.0-0"
-source = "git+https://github.com/zama-ai/kms.git?rev=c6b0fdd39e37ceb68edfae86d521c39dc0d50d46#c6b0fdd39e37ceb68edfae86d521c39dc0d50d46"
+source = "git+https://github.com/celar-network/kms.git?rev=8015482e5ef14a2f57b1f792e584a7fa0533d728#8015482e5ef14a2f57b1f792e584a7fa0533d728"
 dependencies = [
  "anyhow",
  "axum",
@@ -4129,7 +4129,7 @@ checksum = "8f50febec83f5ee1df3015341d8bd429f2d1cc62bcba7ea2076759d315084683"
 [[package]]
 name = "test-utils"
 version = "0.15.0-0"
-source = "git+https://github.com/zama-ai/kms.git?rev=c6b0fdd39e37ceb68edfae86d521c39dc0d50d46#c6b0fdd39e37ceb68edfae86d521c39dc0d50d46"
+source = "git+https://github.com/celar-network/kms.git?rev=8015482e5ef14a2f57b1f792e584a7fa0533d728#8015482e5ef14a2f57b1f792e584a7fa0533d728"
 dependencies = [
  "anyhow",
  "bc2wrap",
@@ -4304,7 +4304,7 @@ dependencies = [
 [[package]]
 name = "thread-handles"
 version = "0.15.0-0"
-source = "git+https://github.com/zama-ai/kms.git?rev=c6b0fdd39e37ceb68edfae86d521c39dc0d50d46#c6b0fdd39e37ceb68edfae86d521c39dc0d50d46"
+source = "git+https://github.com/celar-network/kms.git?rev=8015482e5ef14a2f57b1f792e584a7fa0533d728#8015482e5ef14a2f57b1f792e584a7fa0533d728"
 dependencies = [
  "anyhow",
  "error-utils",
@@ -4326,7 +4326,7 @@ dependencies = [
 [[package]]
 name = "threshold-algebra"
 version = "0.15.0-0"
-source = "git+https://github.com/zama-ai/kms.git?rev=c6b0fdd39e37ceb68edfae86d521c39dc0d50d46#c6b0fdd39e37ceb68edfae86d521c39dc0d50d46"
+source = "git+https://github.com/celar-network/kms.git?rev=8015482e5ef14a2f57b1f792e584a7fa0533d728#8015482e5ef14a2f57b1f792e584a7fa0533d728"
 dependencies = [
  "anyhow",
  "error-utils",
@@ -4347,7 +4347,7 @@ dependencies = [
 [[package]]
 name = "threshold-execution"
 version = "0.15.0-0"
-source = "git+https://github.com/zama-ai/kms.git?rev=c6b0fdd39e37ceb68edfae86d521c39dc0d50d46#c6b0fdd39e37ceb68edfae86d521c39dc0d50d46"
+source = "git+https://github.com/celar-network/kms.git?rev=8015482e5ef14a2f57b1f792e584a7fa0533d728#8015482e5ef14a2f57b1f792e584a7fa0533d728"
 dependencies = [
  "aes 0.9.1",
  "aes-prng",
@@ -4390,7 +4390,7 @@ dependencies = [
 [[package]]
 name = "threshold-hashing"
 version = "0.15.0-0"
-source = "git+https://github.com/zama-ai/kms.git?rev=c6b0fdd39e37ceb68edfae86d521c39dc0d50d46#c6b0fdd39e37ceb68edfae86d521c39dc0d50d46"
+source = "git+https://github.com/celar-network/kms.git?rev=8015482e5ef14a2f57b1f792e584a7fa0533d728#8015482e5ef14a2f57b1f792e584a7fa0533d728"
 dependencies = [
  "anyhow",
  "bc2wrap",
@@ -4403,7 +4403,7 @@ dependencies = [
 [[package]]
 name = "threshold-networking"
 version = "0.15.0-0"
-source = "git+https://github.com/zama-ai/kms.git?rev=c6b0fdd39e37ceb68edfae86d521c39dc0d50d46#c6b0fdd39e37ceb68edfae86d521c39dc0d50d46"
+source = "git+https://github.com/celar-network/kms.git?rev=8015482e5ef14a2f57b1f792e584a7fa0533d728#8015482e5ef14a2f57b1f792e584a7fa0533d728"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4440,7 +4440,7 @@ dependencies = [
 [[package]]
 name = "threshold-types"
 version = "0.15.0-0"
-source = "git+https://github.com/zama-ai/kms.git?rev=c6b0fdd39e37ceb68edfae86d521c39dc0d50d46#c6b0fdd39e37ceb68edfae86d521c39dc0d50d46"
+source = "git+https://github.com/celar-network/kms.git?rev=8015482e5ef14a2f57b1f792e584a7fa0533d728#8015482e5ef14a2f57b1f792e584a7fa0533d728"
 dependencies = [
  "anyhow",
  "async-trait",

@@ -97,16 +97,47 @@ impl RequestRecord {
 }
 
 /// One seat's archived commitment for one epoch, as the chain retains it
-/// (§7.5: per-epoch C_i^(e) in chain state; the D7 store).
+/// (§7.5: per-epoch C_i^(e) in chain state; the epochcommit store).
+///
+/// FIELD ORDER IS CANONICAL and pinned to proto field numbers 1..=4 in
+/// declaration order (agreed with the chain side, 2026-08-29). If an entry
+/// is ever hashed, it is hashed in its proto encoding under these numbers —
+/// no other canonical form exists.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArchivedSeatCommitment {
-    /// The seat's share commitment for that epoch (sha256 hex today,
+    /// 1 — The seat's share commitment for that epoch (sha256 hex today,
     /// matching `ReshareTranscript`; becomes the C_i the π-relation binds).
     pub commitment_sha256: String,
-    /// Roster digest for that epoch. Roles are per-committee indices, so
+    /// 2 — Roster digest for that epoch. Roles are per-committee indices, so
     /// across a membership change "role 3" alone names nobody — this binds
     /// the role to an identity set.
     pub roster_sha256: String,
+    /// 3 — Height at which this epoch was keyed (established on chain).
+    /// A record claiming service under this epoch at an earlier header
+    /// height is malformed: nothing can be served under a key that did not
+    /// yet exist.
+    pub keyed_height: u64,
+    /// 4 — pk_G digest, invariant across epochs; binds the entry to the key
+    /// it belongs to, so evidence carries a key-identity anchor.
+    pub pk_g_sha256: String,
+}
+
+/// Cross-checks a request record against the archived entry its epoch
+/// resolves to. Split out of `verify_fraud` so the binding rules are
+/// directly testable. Malformation ERRORS (framing resistance) — it neither
+/// convicts nor acquits.
+fn check_entry_binding(record: &RequestRecord, entry: &ArchivedSeatCommitment) -> Result<()> {
+    if record.header_height < entry.keyed_height {
+        anyhow::bail!(
+            "malformed evidence: record claims service at header height {} but \
+             epoch {} was not keyed until height {} — nothing can be served \
+             under a key that did not yet exist",
+            record.header_height,
+            record.epoch,
+            entry.keyed_height
+        );
+    }
+    Ok(())
 }
 
 /// Read seam over the chain's per-epoch commitment archive (engineer #1's
@@ -118,7 +149,11 @@ pub trait EpochCommitmentArchive {
     /// (oldest_retained_epoch, latest_epoch). Both survive pruning.
     fn bounds(&self) -> (u64, u64);
     /// The commitment for one seat in one epoch, if retained.
-    fn commitment(&self, epoch: u64, seat_role: usize) -> Option<ArchivedSeatCommitment>;
+    ///
+    /// `seat_role` is the WIRE TYPE agreed with the chain side (2026-08-29):
+    /// `u32`, **1-based, 0 invalid** — callers must reject 0 before lookup;
+    /// an off-by-one here convicts the wrong seat.
+    fn commitment(&self, epoch: u64, seat_role: u32) -> Option<ArchivedSeatCommitment>;
 }
 
 /// Outcome of resolving an epoch against the archive. Three absence cases,
@@ -141,7 +176,7 @@ enum ArchiveResolution {
 fn resolve_epoch(
     archive: &dyn EpochCommitmentArchive,
     epoch: u64,
-    seat_role: usize,
+    seat_role: u32,
 ) -> ArchiveResolution {
     let (oldest, latest) = archive.bounds();
     if epoch < oldest {
@@ -221,6 +256,16 @@ pub fn verify_fraud(
     archive: &dyn EpochCommitmentArchive,
     sig_verifier: &dyn SeatSignatureVerifier,
 ) -> Result<FraudVerdict> {
+    // 0) Wire-rule validation, before anything else: roles are u32,
+    //    1-based, 0 invalid. A role that does not fit is malformed, never
+    //    "not found" — a lookup miss would read as an archive anomaly and
+    //    smear the chain side for the accuser's encoding error.
+    let seat_role_wire: u32 = match evidence.record.seat_role {
+        0 => anyhow::bail!("malformed evidence: seat role 0 is invalid (roles are 1-based)"),
+        r => u32::try_from(r)
+            .map_err(|_| anyhow::anyhow!("malformed evidence: seat role {r} exceeds u32"))?,
+    };
+
     // 1) E9 gate, strict: convictions demand a trusted root.
     let admitted = match TrustPolicy::default().admit(root_source) {
         Ok(a) => a,
@@ -298,7 +343,7 @@ pub fn verify_fraud(
     //    absence outcomes, three different verdicts — before any signature
     //    work, so a time-barred claim never reaches the signature check.
     let epoch_commitment =
-        match resolve_epoch(archive, evidence.record.epoch, evidence.record.seat_role) {
+        match resolve_epoch(archive, evidence.record.epoch, seat_role_wire) {
             ArchiveResolution::Found(c) => c,
             ArchiveResolution::TimeBarred { oldest_retained } => {
                 return Ok(FraudVerdict::NotFraud {
@@ -329,6 +374,10 @@ pub fn verify_fraud(
                 )
             }
         };
+
+    // 4b) Entry binding: the record's header height must not precede the
+    //     epoch's keyed height. Malformation errors (framing resistance).
+    check_entry_binding(&evidence.record, &epoch_commitment)?;
 
     // 5) The seat must actually have committed to serving it — verified
     //    against its commitment FOR THE EPOCH THE RECORD NAMES, which is
@@ -441,10 +490,15 @@ mod tests {
         fn bounds(&self) -> (u64, u64) {
             (self.oldest, self.latest)
         }
-        fn commitment(&self, epoch: u64, seat_role: usize) -> Option<ArchivedSeatCommitment> {
+        fn commitment(&self, epoch: u64, seat_role: u32) -> Option<ArchivedSeatCommitment> {
             ((self.oldest..=self.latest).contains(&epoch)).then(|| ArchivedSeatCommitment {
-                commitment_sha256: Self::commitment_text(epoch, seat_role),
+                commitment_sha256: Self::commitment_text(epoch, seat_role as usize),
                 roster_sha256: "roster-genesis".into(),
+                // Epoch e keyed at height 100·e in the fixture; the standard
+                // test record's header_height (1002) sits comfortably above
+                // epoch 5's keyed height (500).
+                keyed_height: epoch * 100,
+                pk_g_sha256: "pkg-genesis".into(),
             })
         }
     }
@@ -577,7 +631,7 @@ mod tests {
         // Reaching step 4 needs valid slot proofs, which these fixtures do
         // not have — so exercise the resolution directly, as the proof-layer
         // tests do for their step.
-        match resolve_epoch(&arch, ev.record.epoch, ev.record.seat_role) {
+        match resolve_epoch(&arch, ev.record.epoch, ev.record.seat_role as u32) {
             ArchiveResolution::TimeBarred { oldest_retained } => {
                 assert_eq!(oldest_retained, 4)
             }
@@ -598,7 +652,7 @@ mod tests {
             fn bounds(&self) -> (u64, u64) {
                 (0, 6)
             }
-            fn commitment(&self, _: u64, _: usize) -> Option<ArchivedSeatCommitment> {
+            fn commitment(&self, _: u64, _: u32) -> Option<ArchivedSeatCommitment> {
                 None
             }
         }
@@ -641,9 +695,46 @@ mod tests {
 
         // And the full resolution path picks the archived entry from the
         // record's own epoch field — self-containment.
-        match resolve_epoch(&arch, rec.epoch, rec.seat_role) {
+        match resolve_epoch(&arch, rec.epoch, rec.seat_role as u32) {
             ArchiveResolution::Found(c) => assert_eq!(c, c5),
             _ => panic!("epoch 5 must resolve to its archived commitment"),
         }
+    }
+
+    // ---- E31 answers: the entry-binding rules ----------------------------
+
+    #[test]
+    fn serving_before_the_epoch_was_keyed_is_malformed() {
+        // Record claims service at header height 450 under epoch 5, which
+        // the archive says was keyed at height 500. Nothing can be served
+        // under a key that did not yet exist — malformed, ERRORS, never a
+        // verdict in either direction.
+        let mut rec = record(RequestKind::Reveal);
+        rec.header_height = 450;
+        let entry = archive().commitment(5, 3).unwrap(); // keyed_height 500
+        let e = check_entry_binding(&rec, &entry);
+        assert!(e.is_err(), "pre-keying service must be malformed: {e:?}");
+        assert!(e.unwrap_err().to_string().contains("not keyed until"));
+
+        // At exactly the keyed height and above: fine.
+        rec.header_height = 500;
+        assert!(check_entry_binding(&rec, &entry).is_ok());
+    }
+
+    #[test]
+    fn seat_role_zero_is_malformed_not_a_lookup_miss() {
+        // Roles are 1-based on the wire; 0 must error as malformed BEFORE
+        // any archive lookup — a lookup miss would read as an archive
+        // anomaly and smear the chain side for the accuser's encoding error.
+        let mut ev = evidence(RequestKind::Reveal, 3);
+        ev.record.seat_role = 0;
+        let e = verify_fraud(
+            &ev,
+            trusted_source(),
+            &archive(),
+            &TestSigner,
+        );
+        assert!(e.is_err(), "role 0 must be a hard error: {e:?}");
+        assert!(e.unwrap_err().to_string().contains("1-based"), "error must name the convention");
     }
 }
