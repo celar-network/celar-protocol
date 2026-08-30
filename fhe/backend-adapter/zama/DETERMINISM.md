@@ -72,31 +72,19 @@ than assumed.*
 
 TFHE-rs 1.7.0, release profile, CPU **without** AVX-512 (Intel Ultra 7 258V).
 
-## What the digest binds — measured 2026-08-28
+## What the digest binds
 
-**The basis binds how a value was computed, not only what it is.**
-`tests/radix_basis.rs`: adding a trivially encrypted zero leaves the value and
-the body arithmetic alone, yet moves **32 bytes — one per block, at a fixed
-stride** — with the length unchanged. The per-block bookkeeping (degree, noise
-level, moduli) is inside the digested bytes.
+The basis binds **how a value was computed**, not only what it is: adding a
+trivially encrypted zero moves one byte per block, and a subtraction result
+that is cryptographically identical to a direct encryption still digests
+differently. Measurement: `tests/radix_basis.rs`.
 
-Sharper still: trivial encryptions are noiseless, so `sub(trivial 12,
-trivial 7)` has the same mask and the same body as `trivial 5` — a
-cryptographically identical ciphertext. **It digests differently.**
-
-Two consequences, both stronger than anything this file said before:
-
-**1. Identical library versions are consensus-critical, not recommended.** Any
-upstream change to how bookkeeping is tracked moves every digest without
-moving any value. This is a hard-fork-class coupling and belongs in the frozen
-interface rather than here.
-
-**2. A coprocessor must not optimise — including semantics-preserving
-optimisations.** Constant-folding, skipping a provable no-op, or reassociating
-yields a *correct result with a different digest*, which is indistinguishable
-from cheating. That is the same failure the wrapper-field exclusion removed,
-one level deeper: honest disagreement the fraud game cannot tell apart from
-fraud.
+**The two consequences that follow are normative and live in the op-stream
+protocol (v0.5 §8), not here** — the backend library version is
+consensus-critical rather than recommended, and a coprocessor must not
+optimise the stream even in value-preserving ways. They were parked in this
+file while they had no other home; that home now exists and this section
+must not restate them, or the constraint has two records that can drift.
 
 ## Reproducing
 
