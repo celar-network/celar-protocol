@@ -24,6 +24,9 @@ import (
 	evmencoding "github.com/cosmos/evm/encoding"
 	evmaddress "github.com/cosmos/evm/encoding/address"
 	evmconfig "github.com/cosmos/evm/evmd/config"
+	epochcommit "github.com/cosmos/evm/evmd/epochcommit"
+	epochcommitkeeper "github.com/cosmos/evm/evmd/epochcommit/keeper"
+	epochcommittypes "github.com/cosmos/evm/evmd/epochcommit/types"
 	precisebank "github.com/cosmos/evm/evmd/precisebank"
 	precisebankkeeper "github.com/cosmos/evm/evmd/precisebank/keeper"
 	precisebanktypes "github.com/cosmos/evm/evmd/precisebank/types"
@@ -170,6 +173,7 @@ type EVMD struct {
 	AccountKeeper         authkeeper.AccountKeeper
 	BankKeeper            bankkeeper.Keeper
 	PreciseBankKeeper     precisebankkeeper.Keeper
+	EpochCommitKeeper     epochcommitkeeper.Keeper
 	StakingKeeper         *stakingkeeper.Keeper
 	SlashingKeeper        slashingkeeper.Keeper
 	MintKeeper            mintkeeper.Keeper
@@ -249,6 +253,9 @@ func NewExampleApp(
 		evmtypes.StoreKey, feemarkettypes.StoreKey, erc20types.StoreKey,
 		// precisebank store key (fractional balances + remainder)
 		precisebanktypes.StoreKey,
+		// per-epoch committee commitment archive; the store name is part of
+		// the proof path the KMS verifier checks
+		epochcommittypes.StoreKey,
 	)
 	oKeys := storetypes.NewObjectStoreKeys(banktypes.ObjectStoreKey, evmtypes.ObjectKey)
 
@@ -316,6 +323,12 @@ func NewExampleApp(
 		logger,
 	)
 	app.BankKeeper = app.BankKeeper.WithObjStoreKey(oKeys[banktypes.ObjectStoreKey])
+
+	// epochcommit retains per-epoch committee share commitments so that
+	// accountability evidence stays verifiable after a reshare replaces every
+	// live one. NO RUNTIME WRITE PATH yet: entries are established at genesis
+	// and read off-chain through state proofs.
+	app.EpochCommitKeeper = epochcommitkeeper.NewKeeper(keys[epochcommittypes.StoreKey])
 
 	// precisebank wraps x/bank to give the EVM 18-dec precision (acelar) over a
 	// 9-dec integer bank denom (ncelar). It is handed to the EVM-side consumers
@@ -609,6 +622,7 @@ func NewExampleApp(
 		feemarket.NewAppModule(app.FeeMarketKeeper),
 		erc20.NewAppModule(app.Erc20Keeper, app.AccountKeeper),
 		precisebank.NewAppModule(app.PreciseBankKeeper, app.BankKeeper, app.AccountKeeper),
+		epochcommit.NewAppModule(app.EpochCommitKeeper),
 	)
 
 	// BasicModuleManager defines the module BasicManager which is in charge of setting up basic,
@@ -657,6 +671,9 @@ func NewExampleApp(
 		authz.ModuleName, feegrant.ModuleName,
 		consensusparamtypes.ModuleName,
 		vestingtypes.ModuleName,
+		// Prunes epoch commitments past the punishability horizon. Order is
+		// immaterial: it reads and writes only its own store.
+		epochcommittypes.ModuleName,
 	)
 
 	// NOTE: the feemarket module should go last in order of end blockers that are actually doing something,
@@ -696,6 +713,7 @@ func NewExampleApp(
 		feemarkettypes.ModuleName,
 		erc20types.ModuleName,
 		precisebanktypes.ModuleName,
+		epochcommittypes.ModuleName,
 		ibctransfertypes.ModuleName,
 		genutiltypes.ModuleName, evidencetypes.ModuleName, authz.ModuleName,
 		feegrant.ModuleName, upgradetypes.ModuleName, vestingtypes.ModuleName,

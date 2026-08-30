@@ -23,7 +23,24 @@ var (
 	// expired evidence read as forged or forged evidence read as expired.
 	OldestRetainedEpochKey = []byte{0x02}
 	LatestEpochKey         = []byte{0x03}
+	// HorizonPrefix maps an epoch to the height past which its evidence is
+	// no longer punishable. Chain-local: it is NOT part of the entry and NOT
+	// on the proof path the KMS reads, which consumes only the two bounds.
+	//
+	// It is stored rather than derived from keyed_height plus the unbonding
+	// parameter, because "expired" is a verdict that exonerates: a horizon
+	// that moved with a later parameter change would silently exonerate
+	// evidence that was punishable when it was filed.
+	HorizonPrefix = []byte{0x04}
 )
+
+// HorizonKey is prefix ‖ epoch, big-endian for the same reason entry keys
+// are: the sweep walks epochs in order.
+func HorizonKey(epoch uint64) []byte {
+	k := make([]byte, 0, len(HorizonPrefix)+8)
+	k = append(k, HorizonPrefix...)
+	return binary.BigEndian.AppendUint64(k, epoch)
+}
 
 // ErrInvalidSeatRole is returned for seat role 0. Roles are one-based by
 // interface agreement; a lookup on 0 that merely missed would be

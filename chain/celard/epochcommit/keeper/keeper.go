@@ -159,3 +159,109 @@ func (k Keeper) PruneBelow(ctx sdk.Context, newOldest uint64, maxDeletes int) (d
 	}
 	return len(stale)
 }
+
+// InitBounds sets both bounds directly, for genesis import.
+//
+// SetCommitment moves bounds as a side effect, but only upward: it raises the
+// latest epoch and never lowers the retention horizon. That is what keeps an
+// imported archive whose lower epochs were already pruned from reacquiring a
+// horizon at its oldest surviving entry, which would turn time-barred
+// evidence into an anomaly. The guard is in SetCommitment, not in the order
+// these are called.
+func (k Keeper) InitBounds(ctx sdk.Context, oldest, latest uint64) {
+	k.setBounds(ctx, oldest, latest)
+}
+
+// IterateEntries walks every stored entry in key order.
+func (k Keeper) IterateEntries(
+	ctx sdk.Context,
+	cb func(epoch uint64, seatRole uint32, entry types.ArchivedSeatCommitment) bool,
+) error {
+	store := ctx.KVStore(k.storeKey)
+	it := storetypes.KVStorePrefixIterator(store, types.EntryPrefix)
+	defer it.Close()
+	for ; it.Valid(); it.Next() {
+		key := it.Key()
+		if len(key) != len(types.EntryPrefix)+12 {
+			return fmt.Errorf("malformed entry key of length %d", len(key))
+		}
+		epoch := binary.BigEndian.Uint64(key[len(types.EntryPrefix):])
+		role := binary.BigEndian.Uint32(key[len(types.EntryPrefix)+8:])
+		var entry types.ArchivedSeatCommitment
+		if err := entry.Unmarshal(it.Value()); err != nil {
+			return fmt.Errorf("entry (epoch %d, seat %d) does not decode: %w",
+				epoch, role, err)
+		}
+		if !cb(epoch, role, entry) {
+			return nil
+		}
+	}
+	return nil
+}
+
+// SetEpochHorizon records the height past which this epoch's evidence is no
+// longer punishable. Written once, when the epoch is recorded, and never
+// recomputed.
+func (k Keeper) SetEpochHorizon(ctx sdk.Context, epoch uint64, expiryHeight uint64) {
+	ctx.KVStore(k.storeKey).Set(types.HorizonKey(epoch), u64(expiryHeight))
+}
+
+// GetEpochHorizon reports the stored horizon, and whether one exists.
+func (k Keeper) GetEpochHorizon(ctx sdk.Context, epoch uint64) (uint64, bool) {
+	return readU64(ctx.KVStore(k.storeKey).Get(types.HorizonKey(epoch)))
+}
+
+// PruneExpired advances the retention bound past every epoch whose horizon
+// has passed, then deletes boundedly.
+//
+// An epoch with NO stored horizon stops the sweep. Refusing to prune what
+// cannot be shown expired is the safe direction: retaining evidence too long
+// costs storage, whereas discarding it early destroys punishability with no
+// way to recover it — and would present as time-barred, which exonerates.
+//
+// The bound never advances past the latest epoch: an archive must not end up
+// declaring its own newest epoch beyond the horizon.
+func (k Keeper) PruneExpired(
+	ctx sdk.Context, currentHeight uint64, maxDeletes int,
+) (advancedTo uint64, deleted int) {
+	oldest, latest, ok := k.Bounds(ctx)
+	if !ok {
+		return 0, 0
+	}
+	newOldest := oldest
+	for e := oldest; e < latest; e++ {
+		h, found := k.GetEpochHorizon(ctx, e)
+		if !found || h > currentHeight {
+			break
+		}
+		newOldest = e + 1
+	}
+	if newOldest == oldest {
+		return oldest, 0
+	}
+	return newOldest, k.PruneBelow(ctx, newOldest, maxDeletes)
+}
+
+// IterateHorizons walks every stored horizon in epoch order.
+func (k Keeper) IterateHorizons(
+	ctx sdk.Context, cb func(epoch uint64, expiryHeight uint64) bool,
+) error {
+	store := ctx.KVStore(k.storeKey)
+	it := storetypes.KVStorePrefixIterator(store, types.HorizonPrefix)
+	defer it.Close()
+	for ; it.Valid(); it.Next() {
+		key := it.Key()
+		if len(key) != len(types.HorizonPrefix)+8 {
+			return fmt.Errorf("malformed horizon key of length %d", len(key))
+		}
+		h, ok := readU64(it.Value())
+		if !ok {
+			return fmt.Errorf("horizon for epoch %d does not decode",
+				binary.BigEndian.Uint64(key[len(types.HorizonPrefix):]))
+		}
+		if !cb(binary.BigEndian.Uint64(key[len(types.HorizonPrefix):]), h) {
+			return nil
+		}
+	}
+	return nil
+}
