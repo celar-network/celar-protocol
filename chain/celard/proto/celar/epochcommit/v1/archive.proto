@@ -1,0 +1,32 @@
+syntax = "proto3";
+package celar.epochcommit.v1;
+
+option go_package = "github.com/cosmos/evm/evmd/epochcommit/types";
+
+// ArchivedSeatCommitment is one committee seat's DKG share commitment for one
+// epoch, retained in chain state so that accountability evidence stays
+// verifiable after a reshare has replaced every live commitment.
+//
+// The field numbers are the canonical encoding. An entry is hashed in its
+// proto encoding under these numbers and no other canonical form exists, so
+// they are fixed: the KMS-side reader declares the same four in the same
+// order, and the two sides agree by construction rather than by inspection.
+message ArchivedSeatCommitment {
+  // The seat's share commitment for this epoch.
+  string commitment_sha256 = 1;
+
+  // Roster digest for this epoch. Roles are per-committee indices, so across
+  // a membership change "role 3" alone names nobody; this binds the role to
+  // an identity set.
+  string roster_sha256 = 2;
+
+  // Height at which this epoch was keyed. Evidence claiming service under
+  // this epoch at an earlier header height is malformed — nothing can be
+  // served under a key that did not yet exist. The verifier enforces this,
+  // so the value is an operand of a check rather than a record.
+  uint64 keyed_height = 3;
+
+  // pk_G digest, invariant across epochs: binds the entry to the key it
+  // belongs to, so evidence carries a key-identity anchor.
+  string pk_g_sha256 = 4;
+}
