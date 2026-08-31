@@ -1,0 +1,57 @@
+{
+  "bounds_set": true,
+  "entries": [
+    {
+      "commitment": {
+        "commitment_sha256": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+        "keyed_height": "500",
+        "pk_g_sha256": "pkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpk",
+        "roster_sha256": "r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5"
+      },
+      "epoch": "5",
+      "seat_role": 1
+    },
+    {
+      "commitment": {
+        "commitment_sha256": "b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5",
+        "keyed_height": "500",
+        "pk_g_sha256": "pkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpk",
+        "roster_sha256": "r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5r5"
+      },
+      "epoch": "5",
+      "seat_role": 2
+    },
+    {
+      "commitment": {
+        "commitment_sha256": "a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6",
+        "keyed_height": "600",
+        "pk_g_sha256": "pkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpk",
+        "roster_sha256": "r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6"
+      },
+      "epoch": "6",
+      "seat_role": 1
+    },
+    {
+      "commitment": {
+        "commitment_sha256": "b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6",
+        "keyed_height": "600",
+        "pk_g_sha256": "pkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpkpk",
+        "roster_sha256": "r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6r6"
+      },
+      "epoch": "6",
+      "seat_role": 2
+    }
+  ],
+  "horizons": [
+    {
+      "epoch": "5",
+      "expiry_height": "9000000"
+    },
+    {
+      "epoch": "6",
+      "expiry_height": "9000000"
+    }
+  ],
+  "latest_epoch": "6",
+  "oldest_retained_epoch": "5"
+}
