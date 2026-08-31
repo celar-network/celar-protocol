@@ -33,17 +33,23 @@ use algebra::galois_rings::common::ResiduePoly;
 use threshold_execution::endpoints::reshare_sk::{
     ResharePreprocRequired, ReshareSecretKeys, SecureReshareSecretKeys,
 };
+use threshold_execution::config::BatchParams;
+use threshold_execution::large_execution::offline::SecureLargePreprocessing;
 use threshold_execution::online::preprocessing::dummy::DummyPreprocessing;
 use threshold_execution::online::preprocessing::memory::InMemoryBasePreprocessing;
 use threshold_execution::online::preprocessing::RandomPreprocessing;
 use threshold_execution::runtime::sessions::base_session::GenericBaseSessionHandles;
+use threshold_execution::runtime::sessions::large_session::LargeSession;
 use threshold_execution::runtime::sessions::session_parameters::GenericParameterHandles;
 use threshold_execution::runtime::sessions::small_session::SmallSession;
-use threshold_execution::tests::helper::tests_and_benches::execute_protocol_small;
+use threshold_execution::small_execution::offline::Preprocessing;
+use threshold_execution::tests::helper::tests_and_benches::{
+    execute_protocol_large, execute_protocol_small,
+};
 use threshold_execution::tfhe_internals::private_keysets::PrivateKeySet;
 use threshold_types::network::NetworkMode;
 
-use crate::config::{CommitteeConfig, ParamsChoice};
+use crate::config::{CommitteeConfig, ParamsChoice, PreprocMode};
 use crate::dkg::dkg_params;
 use crate::transcript::{share_file, sha256_hex, PartyRecord, Transcript};
 use crate::EXTENSION_DEGREE;
@@ -190,7 +196,20 @@ pub async fn run_local_reshare(
     in_dir: &Path,
     out_dir: &Path,
     drop_role: Option<usize>,
+    preproc: PreprocMode,
 ) -> Result<ReshareOutput> {
+    // Only two modes exist for resharing: dummy (dev) and secure-large.
+    // There has never been a PRSS/secure-small reshare mode, and there will
+    // not be one: PRSS cannot reach genesis scale, and epoch rotation is
+    // the one operation that MUST run at genesis scale (it resets the §7.2
+    // budget). Refuse rather than silently downgrade.
+    if preproc == PreprocMode::Secure {
+        bail!(
+            "reshare has no PRSS/secure-small mode: use --preproc secure-large \
+             (real, genesis-capable) or dummy (dev). The PRSS path cannot reach \
+             genesis scale and resharing is the operation that must."
+        );
+    }
     // Previous epoch artifact: prefer reshare.json (later epoch) over genesis.
     let (prev_path, prev_pk, prev_parties_records, prev_params, epoch) = {
         let reshare_path = in_dir.join("reshare.json");
@@ -213,8 +232,12 @@ pub async fn run_local_reshare(
     let cfg = CommitteeConfig {
         parties,
         params: params_choice,
+        preprocessing: preproc,
         ..Default::default()
     };
+    // validate() carries the n ≥ 4t+1 safety interlock for SecureLarge —
+    // the same silent-corruption bound as everywhere else the large offline
+    // machinery runs. c=4 dev fixtures need --preproc dummy or c ≥ 5 keys.
     cfg.validate()?;
     fs::create_dir_all(out_dir)?;
 
@@ -234,9 +257,95 @@ pub async fn run_local_reshare(
         .context("deriving epoch seed from previous transcript digest")?;
 
     let started = Instant::now();
+    let chunk_size = cfg.preproc_chunk;
 
-    let mut task = |mut session: SmallSession<ResiduePoly<Z128, EXTENSION_DEGREE>>,
-                    _info: Option<String>| {
+    let mut results = if preproc == PreprocMode::SecureLarge {
+        // ---- SECURE-LARGE: the genesis-capable dual-ring offline phase ----
+        // Reshare consumes RANDOMS ONLY, in both rings — no triples — so
+        // this is the cheapest of the three secure-large integrations.
+        // Chunked exactly as the DKG's (monolithic batches fail in robust
+        // reconstruction; upstream never tests above batch 10).
+        let in_dir_large = in_dir_owned.clone();
+        let mut task = |mut session: LargeSession| {
+            let in_dir = in_dir_large.clone();
+            async move {
+                let role = session.my_role().one_based();
+                let mut contribution: Option<PrivateKeySet<EXTENSION_DEGREE>> =
+                    if Some(role) == drop_role {
+                        None
+                    } else {
+                        let bytes = fs::read(in_dir.join(share_file(role)))
+                            .expect("reading previous-epoch share file (dev keys required)");
+                        Some(bincode::deserialize(&bytes).expect("deserializing share"))
+                    };
+
+                session
+                    .network()
+                    .set_timeout_for_next_round(std::time::Duration::from_secs(600))
+                    .await;
+
+                let required = ResharePreprocRequired::new(session.num_parties(), params, false);
+                let chunk = chunk_size.max(1);
+
+                let mut preproc_128: InMemoryBasePreprocessing<
+                    ResiduePoly<Z128, EXTENSION_DEGREE>,
+                > = InMemoryBasePreprocessing::default();
+                let mut left = required.batch_params_128.randoms;
+                while left > 0 {
+                    let step = left.min(chunk);
+                    let mut out = SecureLargePreprocessing::default()
+                        .execute(&mut session, BatchParams { triples: 0, randoms: step })
+                        .await
+                        .expect("secure large offline (Z128 randoms) failed");
+                    preproc_128.append_randoms(
+                        out.next_random_vec(step).expect("draining Z128 randoms"),
+                    );
+                    left -= step;
+                }
+
+                let mut preproc_64: InMemoryBasePreprocessing<
+                    ResiduePoly<Z64, EXTENSION_DEGREE>,
+                > = InMemoryBasePreprocessing::default();
+                let mut left = required.batch_params_64.randoms;
+                while left > 0 {
+                    let step = left.min(chunk);
+                    let mut out = SecureLargePreprocessing::default()
+                        .execute(&mut session, BatchParams { triples: 0, randoms: step })
+                        .await
+                        .expect("secure large offline (Z64 randoms) failed");
+                    preproc_64.append_randoms(
+                        out.next_random_vec(step).expect("draining Z64 randoms"),
+                    );
+                    left -= step;
+                }
+
+                let new_share = SecureReshareSecretKeys::reshare_sk_same_set(
+                    &mut session,
+                    &mut preproc_128,
+                    &mut preproc_64,
+                    &mut contribution,
+                    params,
+                    false,
+                )
+                .await
+                .expect("reshare protocol failed");
+
+                (role, new_share)
+            }
+        };
+        execute_protocol_large::<_, _, ResiduePoly<Z128, EXTENSION_DEGREE>, EXTENSION_DEGREE>(
+            cfg.parties,
+            cfg.session_threshold(),
+            None,
+            NetworkMode::Sync,
+            None,
+            &mut task,
+        )
+        .await
+    } else {
+        // ---- DUMMY (dev): the original small-session path, unchanged ----
+        let mut task = |mut session: SmallSession<ResiduePoly<Z128, EXTENSION_DEGREE>>,
+                        _info: Option<String>| {
         let in_dir = in_dir_owned.clone();
         async move {
             let role = session.my_role().one_based();
@@ -304,20 +413,20 @@ pub async fn run_local_reshare(
             .await
             .expect("reshare protocol failed");
 
-            (role, new_share)
-        }
+                (role, new_share)
+            }
+        };
+        execute_protocol_small::<_, _, ResiduePoly<Z128, EXTENSION_DEGREE>, EXTENSION_DEGREE>(
+            cfg.parties,
+            cfg.session_threshold() as u8,
+            None,
+            NetworkMode::Sync,
+            None,
+            &mut task,
+            None,
+        )
+        .await
     };
-
-    let mut results = execute_protocol_small::<_, _, ResiduePoly<Z128, EXTENSION_DEGREE>, EXTENSION_DEGREE>(
-        cfg.parties,
-        cfg.session_threshold() as u8,
-        None,
-        NetworkMode::Sync,
-        None,
-        &mut task,
-        None,
-    )
-    .await;
     let wall_secs = started.elapsed().as_secs_f64();
 
     if results.len() != parties {
@@ -348,7 +457,10 @@ pub async fn run_local_reshare(
         pk_g_sha256: prev_pk,
         committee_parties: parties,
         params: prev_params,
-        preprocessing: "dummy-randoms".to_string(),
+        preprocessing: match preproc {
+            PreprocMode::SecureLarge => "secure-large-randoms".to_string(),
+            _ => "dummy-randoms".to_string(),
+        },
         recovered_role: drop_role,
         parties: party_records,
         wall_secs,
