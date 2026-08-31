@@ -65,6 +65,11 @@ enum Cmd {
     Reshare {
         /// Directory holding the previous epoch (transcript.json or
         /// reshare.json + party share files).
+        /// Offline randomness: dummy (dev, seeded from the previous
+        /// transcript digest) | secure-large (real, genesis-capable; needs
+        /// c ≥ 4t+1). There is no PRSS reshare mode, deliberately.
+        #[arg(long, default_value = "dummy")]
+        preproc: String,
         #[arg(long = "in", value_name = "DIR")]
         in_dir: PathBuf,
         #[arg(long, default_value = "epoch-out")]
@@ -207,9 +212,17 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Cmd::Reshare { in_dir, out, drop_role } => {
+        Cmd::Reshare { preproc, in_dir, out, drop_role } => {
+            let preproc_mode = match preproc.as_str() {
+                "dummy" => PreprocMode::Dummy,
+                "secure-large" => PreprocMode::SecureLarge,
+                other => anyhow::bail!(
+                    "unknown --preproc {other:?} (expected dummy | secure-large; \
+                     there is no PRSS reshare mode)"
+                ),
+            };
             eprintln!(
-                "celar-dkg: proactive same-set reshare from {}{}",
+                "celar-dkg: proactive same-set reshare (preproc={preproc}) from {}{}",
                 in_dir.display(),
                 drop_role
                     .map(|r| format!(" (party {r} simulates share LOSS + recovery)"))
@@ -219,6 +232,7 @@ async fn main() -> Result<()> {
                 &in_dir,
                 &out,
                 drop_role,
+                preproc_mode,
             )
             .await?;
             println!(
