@@ -110,8 +110,15 @@ func (p Precompile) Run(
 			return nil, err
 		}
 		h := p.deriveHandle(method, argBz)
-		p.registerHandle(evm.StateDB, h, contract.Caller(),
-			p.resultKType(evm.StateDB, method, argBz), readonly)
+		ktype := p.resultKType(evm.StateDB, method, argBz)
+		p.registerHandle(evm.StateDB, h, contract.Caller(), ktype, readonly)
+		// The op-stream event is what a coprocessor executes from: the
+		// precompile describes the work and names its result handle, and
+		// nothing computes here. Emitted after registration so a consumer
+		// never sees a handle the chain has not yet recorded.
+		if err := p.emitStreamEvent(evm, method, argBz, h, ktype, readonly); err != nil {
+			return nil, err
+		}
 		return method.Outputs.Pack(h)
 
 	// ---- stateful: ACL + KMS gateway (journaled path) --------------------
