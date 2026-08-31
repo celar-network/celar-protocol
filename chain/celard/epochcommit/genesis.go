@@ -26,6 +26,11 @@ func InitGenesis(ctx sdk.Context, k keeper.Keeper, gs *types.GenesisState) {
 	for _, h := range gs.Horizons {
 		k.SetEpochHorizon(ctx, h.Epoch, h.ExpiryHeight)
 	}
+	for _, t := range gs.Transcripts {
+		if err := k.SetTranscriptDigest(ctx, t.Epoch, t.Sha256); err != nil {
+			panic(err)
+		}
+	}
 	if gs.BoundsSet {
 		k.InitBounds(ctx, gs.OldestRetainedEpoch, gs.LatestEpoch)
 	}
@@ -53,7 +58,15 @@ func ExportGenesis(ctx sdk.Context, k keeper.Keeper) *types.GenesisState {
 		panic(err)
 	}
 	oldest, latest, ok := k.Bounds(ctx)
+	var transcripts []types.TranscriptDigest
+	if err := k.IterateTranscriptDigests(ctx, func(epoch uint64, d string) bool {
+		transcripts = append(transcripts, types.TranscriptDigest{Epoch: epoch, Sha256: d})
+		return true
+	}); err != nil {
+		panic(err)
+	}
 	gs := types.NewGenesisState(entries, ok, oldest, latest)
 	gs.Horizons = horizons
+	gs.Transcripts = transcripts
 	return gs
 }

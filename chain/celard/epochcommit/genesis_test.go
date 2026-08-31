@@ -126,3 +126,26 @@ func TestHorizonsSurviveRoundTrip(t *testing.T) {
 		t.Fatalf("horizon lost on export: %+v", out.Horizons)
 	}
 }
+
+// Transcript digests must survive export and import. Without them a restored
+// chain cannot check the linkage of a submission against the epoch before it,
+// and would have to either refuse everything or accept anything.
+func TestTranscriptDigestsSurviveRoundTrip(t *testing.T) {
+	k, ctx := newKeeper(t)
+	in := types.NewGenesisState([]types.ArchiveEntry{
+		{Epoch: 4, SeatRole: 1, Commitment: commitment("a")},
+	}, true, 4, 4)
+	in.Transcripts = []types.TranscriptDigest{{Epoch: 4, Sha256: "abc123"}}
+	if err := in.Validate(); err != nil {
+		t.Fatalf("fixture invalid: %v", err)
+	}
+	epochcommit.InitGenesis(ctx, k, in)
+
+	if d, ok := k.GetTranscriptDigest(ctx, 4); !ok || d != "abc123" {
+		t.Fatalf("digest not imported: %q ok=%v", d, ok)
+	}
+	out := epochcommit.ExportGenesis(ctx, k)
+	if len(out.Transcripts) != 1 || out.Transcripts[0].Sha256 != "abc123" {
+		t.Fatalf("digest lost on export: %+v", out.Transcripts)
+	}
+}

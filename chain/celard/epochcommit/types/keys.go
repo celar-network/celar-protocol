@@ -32,7 +32,24 @@ var (
 	// that moved with a later parameter change would silently exonerate
 	// evidence that was punishable when it was filed.
 	HorizonPrefix = []byte{0x04}
+	// TranscriptDigestPrefix maps an epoch to the digest of the ceremony
+	// transcript that established it. A submission for epoch e names the
+	// digest it chains from, and that claim is checked against the value
+	// stored here for e-1.
+	//
+	// Note what this does and does not give: a hash chain establishes
+	// ORDER and CONTINUITY, not authorship. Whether the chain alone makes a
+	// submission unforgeable is an open question with the KMS lane; this
+	// state is needed under every answer to it.
+	TranscriptDigestPrefix = []byte{0x05}
 )
+
+// TranscriptDigestKey is prefix ‖ epoch, big-endian to match the others.
+func TranscriptDigestKey(epoch uint64) []byte {
+	k := make([]byte, 0, len(TranscriptDigestPrefix)+8)
+	k = append(k, TranscriptDigestPrefix...)
+	return binary.BigEndian.AppendUint64(k, epoch)
+}
 
 // HorizonKey is prefix ‖ epoch, big-endian for the same reason entry keys
 // are: the sweep walks epochs in order.
