@@ -10,8 +10,18 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # Every branch, not just main: a task branch now lives until its PR is
+    # ready, and both non-compiling commits this repo has had were on
+    # branches with no PR open — so main-only CI meant no signal at all
+    # during exactly the window where work now happens.
+    branches: ['**']
   pull_request:
+
+# Supersede in-flight runs for the same ref rather than queueing them: a
+# task branch gets several pushes, and only the last one matters.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   go:
