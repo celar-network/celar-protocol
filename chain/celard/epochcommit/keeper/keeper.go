@@ -265,3 +265,46 @@ func (k Keeper) IterateHorizons(
 	}
 	return nil
 }
+
+// SetTranscriptDigest records the digest of the ceremony transcript that
+// established an epoch. Refuses an empty digest: absence must stay
+// distinguishable from a recorded value, exactly as it does for entries.
+func (k Keeper) SetTranscriptDigest(ctx sdk.Context, epoch uint64, digest string) error {
+	if digest == "" {
+		return fmt.Errorf("refusing an empty transcript digest for epoch %d: "+
+			"it would be indistinguishable from an absent one", epoch)
+	}
+	ctx.KVStore(k.storeKey).Set(types.TranscriptDigestKey(epoch), []byte(digest))
+	return nil
+}
+
+// GetTranscriptDigest reports the stored digest and whether one exists. The
+// bool matters: a submission chaining from an epoch whose digest is unknown
+// must be refused rather than treated as chaining from nothing.
+func (k Keeper) GetTranscriptDigest(ctx sdk.Context, epoch uint64) (string, bool) {
+	bz := ctx.KVStore(k.storeKey).Get(types.TranscriptDigestKey(epoch))
+	if len(bz) == 0 {
+		return "", false
+	}
+	return string(bz), true
+}
+
+// IterateTranscriptDigests walks every stored digest in epoch order.
+func (k Keeper) IterateTranscriptDigests(
+	ctx sdk.Context, cb func(epoch uint64, digest string) bool,
+) error {
+	store := ctx.KVStore(k.storeKey)
+	it := storetypes.KVStorePrefixIterator(store, types.TranscriptDigestPrefix)
+	defer it.Close()
+	for ; it.Valid(); it.Next() {
+		key := it.Key()
+		if len(key) != len(types.TranscriptDigestPrefix)+8 {
+			return fmt.Errorf("malformed transcript key of length %d", len(key))
+		}
+		epoch := binary.BigEndian.Uint64(key[len(types.TranscriptDigestPrefix):])
+		if !cb(epoch, string(it.Value())) {
+			return nil
+		}
+	}
+	return nil
+}

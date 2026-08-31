@@ -29,6 +29,14 @@ message EpochHorizon {
   uint64 expiry_height = 2;
 }
 
+// TranscriptDigest is the digest of the ceremony transcript that established
+// an epoch. A submission names the digest it chains from; that claim is
+// checked against the stored value for the preceding epoch.
+message TranscriptDigest {
+  uint64 epoch = 1;
+  string sha256 = 2;
+}
+
 message GenesisState {
   repeated ArchiveEntry entries = 1 [(gogoproto.nullable) = false];
 
@@ -42,4 +50,8 @@ message GenesisState {
   // Carried explicitly: without them a restored chain cannot prune, and
   // cannot show why it is not pruning.
   repeated EpochHorizon horizons = 5 [(gogoproto.nullable) = false];
+
+  // Carried so a restored chain can still check the chain linkage of a
+  // submission against the epoch before it.
+  repeated TranscriptDigest transcripts = 6 [(gogoproto.nullable) = false];
 }
