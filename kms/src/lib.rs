@@ -14,6 +14,8 @@
 //! - the transcript commits to shares (hashes), it never contains them.
 
 pub mod acl;
+#[cfg(test)]
+mod degree_coupling_tests;
 pub mod authz;
 pub mod budget;
 pub mod committee;
