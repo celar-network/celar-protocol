@@ -112,3 +112,20 @@ jobs:
         # ABI.md itself, so a divergence between the specification and the
         # implementation fails loudly instead of accumulating.
         run: python3 test_abi_conformance.py
+
+  hygiene:
+    name: public-release hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: no internal ids in public-bound files
+        # This repository goes public; the working record does not. Two
+        # hand sweeps did not hold — the second found five sites the
+        # first's grep alphabet could not match, and an id reached a
+        # committed test comment three days after that, written by the
+        # person who ran the sweep.
+        #
+        # No toolchain and no checkout cost worth caring about, so it
+        # runs on every push alongside the suites rather than at a gate
+        # nobody reaches until the day it matters.
+        run: ./scripts/check-internal-ids.sh
