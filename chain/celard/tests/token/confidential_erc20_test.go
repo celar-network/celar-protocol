@@ -40,7 +40,17 @@ type forgeArtifact struct {
 
 func loadArtifact(t *testing.T) (abi.ABI, []byte) {
 	t.Helper()
-	p, err := filepath.Abs(artifactRel)
+	return loadArtifactAt(t, artifactRel)
+}
+
+// loadArtifactAt loads any forge artifact by relative path.
+// Split out of loadArtifact so a second contract can be
+// deployed into this fixture without duplicating the
+// CI-fatal / locally-skip decision, which is the part that
+// must not drift between callers.
+func loadArtifactAt(t *testing.T, rel string) (abi.ABI, []byte) {
+	t.Helper()
+	p, err := filepath.Abs(rel)
 	if err != nil {
 		t.Fatalf("resolve artifact path: %v", err)
 	}

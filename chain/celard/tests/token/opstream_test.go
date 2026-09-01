@@ -1,3 +1,5 @@
+//go:build test
+
 package token
 
 import (
@@ -66,8 +68,8 @@ func TestTransferEmitsAnExecutableStream(t *testing.T) {
 // This exercises the MECHANISM rather than our call site. No path in the token
 // contract both performs FHE work and then reverts — every revert there is a
 // guard that fires before any op runs — so a contract-level version of this
-// test needs a purpose-built contract. Recorded as an A6.6 residual rather
-// than left as an untested assumption.
+// test needs a purpose-built contract — see opstream_revert_test.go,
+// which drives one.
 func TestRevertedFrameLeavesNoStreamEvent(t *testing.T) {
 	tk := deployToken(t)
 	before := len(tk.db.Logs())
