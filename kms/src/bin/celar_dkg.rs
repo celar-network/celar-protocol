@@ -110,6 +110,11 @@ enum Cmd {
         /// Number of ciphertexts (each contributes several block samples).
         #[arg(long, default_value_t = 500)]
         ciphertexts: usize,
+        /// Transfer-shaped homomorphic rounds (le/select/sub/add) applied
+        /// before squashing. 0 = fresh encryption; operational ciphertexts
+        /// are post-computation, which is what the bound must cover.
+        #[arg(long, default_value_t = 0)]
+        chain_ops: usize,
         #[arg(long, default_value = "noise-probe.json")]
         out: PathBuf,
     },
@@ -256,18 +261,20 @@ async fn main() -> Result<()> {
             );
             Ok(())
         }
-        Cmd::NoiseProbe { keys_dir, ciphertexts, out } => {
+        Cmd::NoiseProbe { keys_dir, ciphertexts, chain_ops, out } => {
             eprintln!(
-                "celar-dkg: noise probe — {} zero-ciphertexts, unflooded reconstruction, keys {}",
+                "celar-dkg: noise probe — {} zero-ciphertexts, {} op-chain rounds, \
+                 unflooded reconstruction, keys {}",
                 ciphertexts,
+                chain_ops,
                 keys_dir.display()
             );
-            let r = celar_kms::noise_probe::run_noise_probe(&keys_dir, ciphertexts, &out)?;
+            let r = celar_kms::noise_probe::run_noise_probe(&keys_dir, ciphertexts, chain_ops, &out)?;
             println!(
-                "NOISE-PROBE-OK samples={} max_log2={:.1} p99={:.1} mean={:.1} assumed=70 \
-                 observed_slack={:.1} bits report {}",
-                r.samples, r.max_log2, r.p99_log2, r.mean_log2, r.observed_slack_bits,
-                out.display()
+                "NOISE-PROBE-OK chain_ops={} samples={} max_log2={:.1} p99={:.1} mean={:.1} \
+                 assumed=70 observed_slack={:.1} bits report {}",
+                r.chain_ops, r.samples, r.max_log2, r.p99_log2, r.mean_log2,
+                r.observed_slack_bits, out.display()
             );
             Ok(())
         }
