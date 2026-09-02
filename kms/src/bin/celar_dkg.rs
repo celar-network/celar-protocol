@@ -101,6 +101,18 @@ enum Cmd {
         #[arg(long, default_value = "decrypt-report.json")]
         out: PathBuf,
     },
+    /// Measure the raw (unflooded) post-switch-and-squash noise using dev
+    /// keys: encrypts zero, reconstructs without masks, logs |e|. The
+    /// observed distribution anchors the analytical bound verdict.
+    NoiseProbe {
+        #[arg(long)]
+        keys_dir: PathBuf,
+        /// Number of ciphertexts (each contributes several block samples).
+        #[arg(long, default_value_t = 500)]
+        ciphertexts: usize,
+        #[arg(long, default_value = "noise-probe.json")]
+        out: PathBuf,
+    },
     /// B3: threshold RE-ENCRYPTION (§7.3) — seats produce masked partials,
     /// the requester combines them locally. No intermediary sees plaintext.
     Reencrypt {
@@ -241,6 +253,21 @@ async fn main() -> Result<()> {
                 outcome.transcript.wall_secs,
                 outcome.transcript.pk_g_sha256,
                 out.join("reshare.json").display(),
+            );
+            Ok(())
+        }
+        Cmd::NoiseProbe { keys_dir, ciphertexts, out } => {
+            eprintln!(
+                "celar-dkg: noise probe — {} zero-ciphertexts, unflooded reconstruction, keys {}",
+                ciphertexts,
+                keys_dir.display()
+            );
+            let r = celar_kms::noise_probe::run_noise_probe(&keys_dir, ciphertexts, &out)?;
+            println!(
+                "NOISE-PROBE-OK samples={} max_log2={:.1} p99={:.1} mean={:.1} assumed=70 \
+                 observed_slack={:.1} bits report {}",
+                r.samples, r.max_log2, r.p99_log2, r.mean_log2, r.observed_slack_bits,
+                out.display()
             );
             Ok(())
         }
