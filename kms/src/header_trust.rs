@@ -1,5 +1,5 @@
-//! E9: the AppHash trust boundary (B4 precondition; spec W20 makes the
-//! light-client header a MUST).
+//! The AppHash trust boundary — a precondition of fraud-proof verification.
+//! The specification makes the light-client-verified header a MUST.
 //!
 //! The ICS23 chain proves `AppHash ⊢ evm store ⊢ acl[h][grantee]` — but a
 //! proof is only as trustworthy as its root. An AppHash taken from an RPC
@@ -12,15 +12,15 @@
 //! - [`AppHashSource`] names where a root came from — there are exactly two
 //!   answers, and they are not interchangeable;
 //! - [`TrustPolicy::admit`] is the gate: **unverified roots are REFUSED by
-//!   default** (the same refusal posture as the G10 ACL property). Dev/test
+//!   default** (the same refusal posture as the ACL read path). Dev/test
 //!   flows must opt in explicitly and the admitted root stays *tainted* so
 //!   no downstream output can silently launder it into a trusted verdict;
-//! - B4's authorization predicate MUST take an [`AdmittedAppHash`], never a
+//! - the authorization predicate MUST take an [`AdmittedAppHash`], never a
 //!   raw `[u8; 32]` — the type is the enforcement.
 //!
-//! What this deliberately is NOT (per E9): a light client. The
+//! What this deliberately is NOT: a light client. The
 //! `LightClientVerified` variant is the seam where one plugs in — the KMS
-//! service (B2+) wires a real Tendermint light client (trusted checkpoint,
+//! service wires a real Tendermint light client (trusted checkpoint,
 //! validator-set signature verification, bisection) and constructs the
 //! variant from its verified headers. Until then nothing in this crate can
 //! fabricate a trusted root: the only constructor callers reach in practice
@@ -34,7 +34,7 @@ pub enum AppHashSource {
     /// Verified by a Tendermint/CometBFT **light client** against a trusted
     /// checkpoint: header signatures checked against the known validator
     /// set, height monotonicity enforced. The only source the KMS trust
-    /// path accepts (spec §7.4/G10, W20: MUST).
+    /// path accepts (spec §7.4, normative).
     LightClientVerified { app_hash: [u8; 32], height: u64 },
     /// Supplied by the caller (RPC response, file on disk, CLI flag) with
     /// **no verification**. Whoever produced it controls what the verifier
@@ -67,7 +67,7 @@ pub struct AdmittedAppHash {
 impl TrustPolicy {
     /// The boundary. Refusal on an unverifiable root is the default and is
     /// deliberate: proving ACL state against an unproven root proves
-    /// nothing, and a KMS must refuse rather than guess (G10 property).
+    /// nothing, and a KMS must refuse rather than guess (ACL refusal property).
     pub fn admit(&self, source: AppHashSource) -> Result<AdmittedAppHash> {
         match source {
             AppHashSource::LightClientVerified { app_hash, height } => Ok(AdmittedAppHash {
@@ -80,7 +80,7 @@ impl TrustPolicy {
                     bail!(
                         "REFUSED: the AppHash is caller-supplied and NOT light-client-verified. \
                          An unverified root proves nothing — whoever served it controls what \
-                         this verifier believes (E9 trust boundary; spec W20 makes the \
+                         this verifier believes (the AppHash trust boundary; the spec makes the \
                          light-client header a MUST). Dev/test flows may override with \
                          --allow-unverified-header, which taints the verdict."
                     );
@@ -115,7 +115,7 @@ mod tests {
 
     #[test]
     fn unverified_is_refused_by_default() {
-        // The E9 acceptance test: default policy + caller-supplied root ⇒ refusal.
+        // The acceptance test: default policy + caller-supplied root ⇒ refusal.
         let err = TrustPolicy::default()
             .admit(AppHashSource::UnverifiedCallerSupplied {
                 app_hash: HASH,

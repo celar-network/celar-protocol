@@ -1,7 +1,7 @@
-//! B3: threshold re-encryption toward a user key (§7.3) — the private-read
+//! Threshold re-encryption toward a user key (§7.3) — the private-read
 //! path, and the one where **no intermediary ever holds a plaintext**.
 //!
-//! Contrast with B2 (`decrypt.rs`, the public-reveal path): there the parties
+//! Contrast with the public-reveal path (`decrypt.rs`): there the parties
 //! run a robust *open* among themselves and every seat learns the plaintext.
 //! Here each seat computes only a **masked partial** (its share of the
 //! decryption plus flooding noise) and hands it to the requester; the
@@ -16,12 +16,12 @@
 //!
 //! Client-side combination is modelled honestly: [`combine_partials`] takes
 //! only what a requester legitimately has — the partials, the committee
-//! shape, and public parameters — and is what the E3 wallet will call.
+//! shape, and public parameters — and is what the wallet will call.
 //!
 //! NOT yet modelled (stated, not hidden): the transport encryption of each
 //! partial *toward the requester's public key* (upstream binds partials to a
-//! user key at the service layer, which is B3's service-integration step);
-//! and the W8 accountable-decryption binding (request-bound partials via
+//! user key at the service layer, which is the service-integration step);
+//! and the accountable-decryption binding of §7.4 (request-bound partials via
 //! ek_i) — parked spec, explicitly not built against.
 
 use std::collections::HashMap;
@@ -151,7 +151,7 @@ pub struct ReencryptOutput {
 /// Client-side combination: reconstruct the plaintext from `partials`.
 ///
 /// This is the requester's half of §7.3 and takes NO secret material — only
-/// masked partials plus public committee shape/parameters. The E3 wallet
+/// masked partials plus public committee shape/parameters. The wallet
 /// calls exactly this.
 pub fn combine_partials<T>(
     partials: &[PartialContribution],
@@ -283,7 +283,7 @@ pub async fn run_local_reencrypt(
     );
 
     // Committee side: each seat produces a MASKED PARTIAL. No open, no
-    // plaintext — the difference from B2 is exactly here.
+    // plaintext — the difference from the reveal path is exactly here.
     let shares_dir_owned = shares_dir.to_path_buf();
     let started_partials = Instant::now();
     let mut task = |session: SmallSession<ResiduePoly<Z128, EXTENSION_DEGREE>>,
@@ -327,7 +327,7 @@ pub async fn run_local_reencrypt(
             let cold_secs = t0.elapsed().as_secs_f64();
 
             // WARM steady-state measurement (seat 1 only, to keep runs cheap).
-            // Discard one call first — same discipline as Track A's bake-off
+            // Discard one call first — same discipline as the backend bake-off
             // harness, whose `timed()` warms before measuring — then compare
             // a warm single call against N warm calls. Comparing N-runs to a
             // COLD baseline (as the first version did) charges warm-up to the

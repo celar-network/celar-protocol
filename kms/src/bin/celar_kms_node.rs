@@ -1,4 +1,4 @@
-//! celar-kms-node — Celar KMS ceremony node (B1 hardening H2).
+//! celar-kms-node — Celar KMS ceremony node (mTLS ceremony hardening).
 //!
 //!   celar-kms-node gen-configs --parties 4 --base-port 51000 --certs-dir certs \
 //!                              --out-dir ceremony        # write n node configs
@@ -31,7 +31,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// B6: write a committee roster from a certs directory (dev helper —
+    /// write a committee roster from a certs directory (dev helper —
     /// computes the real CA pins; a production roster is authored during
     /// vetting, not generated).
     RosterInit {
@@ -82,7 +82,7 @@ enum Cmd {
         out_dir: PathBuf,
         #[arg(long, default_value_t = false)]
         write_dev_keys: bool,
-        /// B6: govern the ceremony by a vetted roster (peers, MPC identities
+        /// govern the ceremony by a vetted roster (peers, MPC identities
         /// and committee size come FROM the roster; nodes verify CA pins).
         #[arg(long)]
         roster: Option<PathBuf>,
@@ -183,7 +183,7 @@ async fn main() -> Result<()> {
         } => {
             fs::create_dir_all(&out_dir)?;
 
-            // B6: a roster, when given, is the source of truth for the
+            // a roster, when given, is the source of truth for the
             // committee shape and every peer's identity.
             let loaded_roster = roster
                 .as_ref()
@@ -310,7 +310,7 @@ async fn main() -> Result<()> {
                 {
                     bail!("fragment {} disagrees on params/tag/session_id", f.role);
                 }
-                // B6: either every node ran under the SAME roster, or none did.
+                // either every node ran under the SAME roster, or none did.
                 if f.roster_sha256 != first.roster_sha256 {
                     bail!(
                         "fragment {} ran under a different roster ({:?} vs {:?}) — \

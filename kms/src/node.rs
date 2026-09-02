@@ -17,7 +17,8 @@
 //! canonical transcript (pk_G equality across fragments is the group-key
 //! property, checked at collection).
 //!
-//! This is deliberately the seed of the real Celar KMS daemon: B2/B3 add
+//! This is deliberately the seed of the real Celar KMS daemon: threshold
+//! decryption and re-encryption add
 //! request-serving endpoints on top of exactly this networking + session
 //! stack; the DKG ceremony is its first (one-shot) mode.
 
@@ -120,7 +121,7 @@ pub struct NodeConfig {
     pub out_dir: PathBuf,
     #[serde(default)]
     pub write_dev_keys: bool,
-    /// B6: path to the vetted committee roster governing this ceremony.
+    /// Path to the vetted committee roster governing this ceremony.
     /// When set, the node validates the roster (§7.7 rules for genesis mode),
     /// checks its OWN entry and every peer against it, verifies the TLS
     /// trust-root set matches the roster's CA pins exactly, and stamps the
@@ -197,7 +198,7 @@ pub struct TranscriptFragment {
     pub share_commitment_sha256: String,
     pub wall_secs: f64,
     pub transport: String,
-    /// B6: digest of the roster this node ran under (None = dev, rosterless).
+    /// Digest of the roster this node ran under (None = dev, rosterless).
     #[serde(default)]
     pub roster_sha256: Option<String>,
 }
@@ -257,7 +258,7 @@ fn server_tls(tls: &TlsPaths) -> Result<ServerTlsConfig> {
 pub async fn run_ceremony(cfg: &NodeConfig) -> Result<TranscriptFragment> {
     cfg.validate()?;
 
-    // B6: enforce the vetted roster before any networking happens.
+    // Enforce the vetted roster before any networking happens.
     let roster_sha256 = match &cfg.roster {
         None => None,
         Some(path) => {
@@ -521,7 +522,7 @@ pub async fn run_ceremony(cfg: &NodeConfig) -> Result<TranscriptFragment> {
     // parties. The full ServerKey stores bootstrapping keys in the FOURIER
     // domain (f64), and that local integer→float conversion is not
     // bit-reproducible even across processes on one machine (tfhe-fft
-    // runtime dispatch / A3 finding) — committing to the decompressed form
+    // runtime dispatch finding) — committing to the decompressed form
     // made honest parties' pk_G digests differ while every opened value
     // agreed. Decompression is a LOCAL operation, done per node at use time.
     // This also matches upstream production, which stores compressed keysets.
