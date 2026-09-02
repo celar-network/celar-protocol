@@ -45,6 +45,14 @@ pub struct NoiseProbeReport {
     pub parties: usize,
     pub params: String,
     pub ciphertexts: usize,
+    /// Homomorphic op-chain rounds applied BEFORE squashing. 0 = fresh
+    /// encryption. Each round is the branchless-transfer shape from the
+    /// frozen ABI workload — le, select, sub, add — on zero-valued
+    /// operands, so the plaintext stays zero while the ciphertext carries
+    /// genuine post-computation noise. Operational ciphertexts reach
+    /// decryption in THIS state, not fresh — the fresh-run slack is only
+    /// an upper bound on what the flooding budget can claim.
+    pub chain_ops: usize,
     pub samples: usize,
     /// log₂ of |e| per statistic, in bits. `assumed_bound` is the constant
     /// the flooding budget is currently sized against.
@@ -74,8 +82,14 @@ fn centered_magnitude_log2(v: u128) -> f64 {
     }
 }
 
-/// Probe the raw (unflooded) post-squash noise using dev keys.
-pub fn run_noise_probe(keys_dir: &Path, ciphertexts: usize, out_path: &Path) -> Result<NoiseProbeReport> {
+/// Probe the raw (unflooded) post-squash noise using dev keys, optionally
+/// after `chain_ops` rounds of transfer-shaped homomorphic computation.
+pub fn run_noise_probe(
+    keys_dir: &Path,
+    ciphertexts: usize,
+    chain_ops: usize,
+    out_path: &Path,
+) -> Result<NoiseProbeReport> {
     let transcript = Transcript::load(&keys_dir.join("transcript.json"))?;
     let parties = transcript.committee.parties;
     let cfg = CommitteeConfig {
@@ -115,7 +129,29 @@ pub fn run_noise_probe(keys_dir: &Path, ciphertexts: usize, out_path: &Path) -> 
             .get(0)
             .context("compact list slot 0")?
             .context("slot 0 empty")?;
-        let (radix, _, _, _) = ct.into_raw_parts();
+
+        // Optional op-chain: repeated NON-bootstrapped homomorphic addition
+        // of zero-valued ciphertexts. Plaintext stays zero; noise grows
+        // additively with each op WITHOUT a PBS reset — which is the point.
+        // The high-level comparison/select ops bootstrap, resetting noise to
+        // a characteristic level, so a chain of those would measure PBS
+        // output noise, not accumulation. Balance arithmetic between refreshes
+        // is what actually piles up pre-squash, and additive growth is its
+        // worst case — the state an operational ciphertext reaches decryption in.
+        let mut acc = ct;
+        for _ in 0..chain_ops {
+            let compact_n = tfhe::CompactCiphertextList::builder(&pk.public_key)
+                .push(0u64)
+                .build();
+            let addend: tfhe::FheUint64 = compact_n
+                .expand()
+                .context("expanding addend")?
+                .get(0)
+                .context("addend slot")?
+                .context("addend empty")?;
+            acc = &acc + &addend;
+        }
+        let (radix, _, _, _) = acc.into_raw_parts();
         let small_ct = RadixOrBoolCiphertext::Radix(radix);
         let large_ct = match &small_ct {
             RadixOrBoolCiphertext::Radix(c) => SnsRadixOrBoolCiphertext::Radix(
@@ -160,6 +196,7 @@ pub fn run_noise_probe(keys_dir: &Path, ciphertexts: usize, out_path: &Path) -> 
         parties,
         params: transcript.dkg.params.clone(),
         ciphertexts,
+        chain_ops,
         samples,
         max_log2,
         mean_log2,
