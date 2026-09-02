@@ -118,6 +118,21 @@ enum Cmd {
         #[arg(long, default_value = "noise-probe.json")]
         out: PathBuf,
     },
+    /// CENTRALIZED noise probe — one keyset, full-key raw phase. The
+    /// production-parameter path: measures the same post-squash noise as
+    /// `noise-probe` but without the multi-party memory that OOMs at NIST
+    /// params. No DKG, no keys-dir.
+    NoiseProbeCentral {
+        /// Parameter set: test (fast) | nist (production).
+        #[arg(long, default_value = "test")]
+        params: String,
+        #[arg(long, default_value_t = 300)]
+        ciphertexts: usize,
+        #[arg(long, default_value_t = 0)]
+        chain_ops: usize,
+        #[arg(long, default_value = "noise-probe-central.json")]
+        out: PathBuf,
+    },
     /// Threshold RE-ENCRYPTION (§7.3) — seats produce masked partials,
     /// the requester combines them locally. No intermediary sees plaintext.
     Reencrypt {
@@ -274,6 +289,28 @@ async fn main() -> Result<()> {
                 "NOISE-PROBE-OK chain_ops={} samples={} max_log2={:.1} p99={:.1} mean={:.1} \
                  assumed=70 observed_slack={:.1} bits report {}",
                 r.chain_ops, r.samples, r.max_log2, r.p99_log2, r.mean_log2,
+                r.observed_slack_bits, out.display()
+            );
+            Ok(())
+        }
+        Cmd::NoiseProbeCentral { params, ciphertexts, chain_ops, out } => {
+            let params_choice = match params.as_str() {
+                "test" => celar_kms::config::ParamsChoice::Test,
+                "nist" => celar_kms::config::ParamsChoice::NistP32SnsFglwe,
+                other => anyhow::bail!("unknown --params {other:?} (expected test | nist)"),
+            };
+            eprintln!(
+                "celar-dkg: CENTRALIZED noise probe — {} zero-ciphertexts, {} op-chain rounds, \
+                 single keyset at {}",
+                ciphertexts, chain_ops, params_choice.name()
+            );
+            let r = celar_kms::noise_probe::run_noise_probe_centralized(
+                params_choice, ciphertexts, chain_ops, &out,
+            )?;
+            println!(
+                "NOISE-PROBE-CENTRAL-OK params={} chain_ops={} samples={} max_log2={:.1} \
+                 p99={:.1} mean={:.1} assumed=70 observed_slack={:.1} bits report {}",
+                r.params, r.chain_ops, r.samples, r.max_log2, r.p99_log2, r.mean_log2,
                 r.observed_slack_bits, out.display()
             );
             Ok(())
