@@ -1,8 +1,8 @@
-# kms — Track B: threshold key management (§7)
+# kms — threshold key management (§7)
 
-DKG (B1), noise-flooded threshold decrypt/re-encrypt (B2/B3), authorization +
-fraud proofs (B4), proactive resharing (B5), permissioned committee mode (B6),
-plus G10 (the KMS ACL read path) — per `doc/engg/celar-onboarding-track-b.md`.
+Distributed key generation, noise-flooded threshold decryption and
+re-encryption, authorization and fraud proofs, proactive resharing,
+permissioned committee mode, and the ACL read path.
 
 **This directory IS the `celar-kms` Rust crate** (flattened from
 `kms/celar-kms/` on 2026-08-16 — older docs may cite the nested path).
@@ -15,12 +15,12 @@ see the comment in `Cargo.toml`.
 
 | Piece | State |
 |---|---|
-| **B1 DKG** — local n-party + real MPC offline phase (`--preproc secure`) + gRPC/mTLS ceremony (`celar-kms-node`, one process per member) | 🟡 code-complete; awaits 𝒫_FHE params, genesis-scale run, §7.1 quorum-mapping decision |
-| **B5 resharing** — epoch-chained `reshare.json`, pk_G invariant, recovery via `--drop-role` | 🟡 local milestone; secure dual-ring offline + ceremony mode pending |
-| **B6 committee mode** — §7.7 vetted roster, CA-cert pinning, roster digest through fragments → transcript | 🟡 rules enforced + unit-tested at genesis scale; genesis-scale ceremony pending |
-| **G10 ACL verify** — `celar-acl-verify`: ICS23 (AppHash(H+1) ⊢ `evm` store ⊢ IAVL) + reference MPT path | **ICS23 ratified (§4.1, 2026-08-16)** — the production read path; `mpt.rs` is the oracle |
+| **DKG** — local n-party + real MPC offline phase (`--preproc secure`) + gRPC/mTLS ceremony (`celar-kms-node`, one process per member) | 🟡 code-complete; awaits 𝒫_FHE params, genesis-scale run, §7.1 quorum-mapping decision |
+| **Resharing** — epoch-chained `reshare.json`, pk_G invariant, recovery via `--drop-role` | 🟡 local milestone; secure dual-ring offline + ceremony mode pending |
+| **Committee mode** — §7.7 vetted roster, CA-cert pinning, roster digest through fragments → transcript | 🟡 rules enforced + unit-tested at genesis scale; genesis-scale ceremony pending |
+| **ACL verify** — `celar-acl-verify`: ICS23 (AppHash(H+1) ⊢ `evm` store ⊢ IAVL) + reference MPT path | **ICS23 ratified (§4.1, 2026-08-16)** — the production read path; `mpt.rs` is the oracle |
 
-## The AppHash trust boundary (E9 — B4 precondition; spec W20: MUST)
+## The AppHash trust boundary (a precondition of fraud-proof verification; normative)
 
 An ICS23 chain is only as trustworthy as its root. A caller-supplied AppHash
 (RPC response, file, flag) relocates the committee's trust to whoever served
@@ -29,14 +29,14 @@ it — so `header_trust.rs` makes the boundary mechanical:
 - `AppHashSource::LightClientVerified` — the **only** source the KMS trust
   path accepts. Constructed from headers verified by a Tendermint light
   client (trusted checkpoint + validator-set signatures); the KMS service
-  (B2+) wires the actual light client into this seam.
+  wires the actual light client into this seam once seat signing keys land.
 - `AppHashSource::UnverifiedCallerSupplied` — what `--header`/`--app-hash`
   produce. **Refused by default.** Dev/test flows opt in with
   `--allow-unverified-header`, and the verdict is permanently tainted
   (`root=UNVERIFIED-DEV (not a trusted verdict)`).
-- B4's authorization predicate takes an `AdmittedAppHash`, never a raw hash —
+- The authorization predicate takes an `AdmittedAppHash`, never a raw hash —
   the type system is the enforcement. Refusal on an unverifiable root is the
-  same posture as the G10 ACL refusal property.
+  same posture as the ACL read path's refusal property.
 
 Transcripts are public artifacts: config, upstream pin, pk_G digest,
 per-party share **commitments** — never shares. `--write-dev-keys` runs are
@@ -53,12 +53,12 @@ cargo test  --release                       # config/transcript/mpt/acl/committe
 ./target/release/celar-dkg run --parties 4 --preproc secure --out /tmp/dkg-dev --write-dev-keys
 ./target/release/celar-dkg verify --transcript /tmp/dkg-dev/transcript.json --keys-dir /tmp/dkg-dev
 
-# proactive reshare (B5): epoch 1 from a previous run's dir
+# proactive reshare: epoch 1 from a previous run's dir
 ./target/release/celar-dkg reshare --in /tmp/dkg-dev --out /tmp/epoch1 [--drop-role 3]
 ./target/release/celar-dkg verify-reshare --transcript /tmp/epoch1/reshare.json \
   --prev /tmp/dkg-dev/transcript.json --keys-dir /tmp/epoch1
 
-# mTLS ceremony (H2) with a vetted roster (B6):
+# mTLS ceremony with a vetted roster:
 ./target/release/celar-certs --ca-prefix party --ca-count 4 -n 1 -o certs
 echo "127.0.0.1 core1.party1 core1.party2 core1.party3 core1.party4" | sudo tee -a /etc/hosts
 ./target/release/celar_kms_node roster-init --parties 4 --certs-dir certs --out roster.json

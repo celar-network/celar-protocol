@@ -1,4 +1,4 @@
-//! Committee configuration — party count from config (onboarding §4, B1).
+//! Committee configuration — party count from config.
 //!
 //! Two thresholds are deliberately distinct (whitepaper §7.1 mapping,
 //! reconstruction quorum vs robustness bound — the v0.9.10 disclosure):
@@ -10,11 +10,11 @@
 //!   protocol session (their tests run n=4/t=1, n=5/t=1). Defaults to
 //!   ⌊(c−1)/3⌋, the classic robust-MPC bound.
 //!
-//! ⚠ OPEN SPEC QUESTION (routed to owner/spec via work orders, do not silently
+//! ⚠ OPEN SPEC QUESTION (raised with the specification owners, do not silently
 //! "fix" here): how Celar's reconstruction quorum maps onto the upstream
 //! sharing degree. If the Shamir degree follows `session_threshold`, then
 //! degree+1 shares reconstruct — fewer than ⌊3c/4⌋+1. The whitepaper's §7.1
-//! convention note is the seam; B1 proper must resolve the mapping before any
+//! convention note is the seam; the DKG work must resolve the mapping before any
 //! security claim is attached to the quorum number. The config carries both
 //! numbers explicitly so the decision lands in one place.
 
@@ -41,7 +41,7 @@ pub const MAX_PARTIES: usize = (1 << crate::EXTENSION_DEGREE) - 1;
 // while `committee.rs` refused any committee below GENESIS_MIN = 30 — so **no
 // committee size satisfied both**, and every "genesis-scale" test we had passed
 // because it exercised the roster rules rather than an actual sharing at that size.
-// Found while answering E18; filed as W33.
+// Found while checking the λ-blowup question.
 //
 // A runtime check alone would have been the weaker fix: it only fires if someone
 // runs a genesis-scale ceremony, which is exactly the thing that had never been run.
@@ -53,7 +53,7 @@ const _: () = assert!(
      (upstream ships degrees 3-8) and re-measure — every ring element widens."
 );
 
-/// Which offline phase feeds the DKG (B1 hardening H1).
+/// Which offline phase feeds the DKG.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum PreprocMode {

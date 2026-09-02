@@ -1,4 +1,4 @@
-//! B7.0a — empirical characterisation of the post-switch-and-squash noise.
+//! Empirical characterisation of the post-switch-and-squash noise.
 //!
 //! The flooding parameter budget assumes the real noise is bounded by
 //! 2^LOG_B_SWITCH_SQUASH = 2^70, a hard-coded upper bound the upstream
@@ -14,7 +14,7 @@
 //! 2^128). Record log₂|e| over many ciphertexts × blocks.
 //!
 //! An empirical max is NOT a bound — the analytical tail argument is
-//! routed to research (B7.0b). This measurement is the sanity anchor for
+//! routed to research for an analytical verdict. This measurement is the sanity anchor for
 //! that verdict, in both directions.
 
 use std::fs;
@@ -53,7 +53,7 @@ pub struct NoiseProbeReport {
     pub p99_log2: f64,
     pub assumed_bound_log2: u32,
     /// Slack between the observed max and the assumed bound — the quantity
-    /// the analytical verdict (B7.0b) decides how much of is claimable.
+    /// the analytical verdict decides how much of it is claimable.
     pub observed_slack_bits: f64,
     /// Honest label: this is an OBSERVED distribution, not a bound.
     pub caveat: &'static str,

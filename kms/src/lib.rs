@@ -1,6 +1,6 @@
-//! Celar threshold KMS — Track B.
+//! Celar threshold KMS.
 //!
-//! B1 skeleton: a local n-party DKG run (whitepaper §7.1) over the
+//! Skeleton: a local n-party DKG run (whitepaper §7.1) over the
 //! `zama-ai/kms` `threshold-execution` protocol crate, producing a published,
 //! re-verifiable transcript artifact. Permissioned genesis mode first (§7.7):
 //! party count comes from config, reconstruction quorum t = ⌊3c/4⌋+1.
@@ -45,7 +45,7 @@ pub mod transcript;
 /// `committee.rs` refused any committee under 30 — no committee size was
 /// constructible, and it went unnoticed because every run to date is c=4 and the
 /// "genesis-scale" tests exercised roster rules rather than a sharing. Found while
-/// answering E18; filed as W33.
+/// from the λ-blowup check and the committee-size finding.
 ///
 /// Why 7 rather than 6: degree 6 gives 63 parties, which covers the genesis range
 /// 30–50 but **not** §7.7's permissionless c=100, so it would buy a second

@@ -1,11 +1,11 @@
 //! Merkle-Patricia-Trie inclusion-proof verification (EIP-1186 / eth_getProof
-//! node lists) — the G10 primitive.
+//! node lists) — the ACL proof-path primitive.
 //!
 //! Standard, boring, and deliberately dependency-light: the ACL read path is
 //! a named audit-scope item, so "small and standard" beats clever (onboarding
-//! doc §4, G10 row). No custom Merkle format anywhere — this is exactly the
+//! doc §4). No custom Merkle format anywhere — this is exactly the
 //! geth secure-trie layout, which is the point of the ACL living in EVM
-//! storage (G9/S4 decision).
+//! storage (per the ACL storage-layout decision).
 
 use std::collections::HashMap;
 

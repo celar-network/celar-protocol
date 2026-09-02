@@ -1,4 +1,4 @@
-//! celar-acl-verify — the G10 spike: verify a proof of Celar ACL state
+//! celar-acl-verify — the ACL read-path spike: verify a proof of Celar ACL state
 //! against a devnet commitment, KMS-side.
 //!
 //!   celar-acl-verify slots  --handle 0x… --grantee 0x…
@@ -6,7 +6,7 @@
 //!                           --allow-unverified-header [--block block.json] \
 //!                           --handle 0x… --grantee 0x… --perm reencrypt-to-self
 //!
-//! E9 TRUST BOUNDARY: --header/--app-hash roots are caller-supplied and NOT
+//! TRUST BOUNDARY: --header/--app-hash roots are caller-supplied and NOT
 //! light-client-verified — REFUSED by default; the dev flag admits them and
 //! taints the verdict (`root=UNVERIFIED-DEV`). The KMS trust path only
 //! accepts `AppHashSource::LightClientVerified` (see `header_trust`).
@@ -18,7 +18,7 @@
 //!
 //! Two verification formats, auto-detected from the proof bytes:
 //!
-//! * **ics23** (what `cosmos/evm` v0.7.0 actually serves — G10 finding
+//! * **ics23** (what `cosmos/evm` v0.7.0 actually serves — ACL proof-format finding
 //!   2026-08-15): each storage slot carries [iavl, multistore] protobuf
 //!   proofs; chain = AppHash ⊢ store "evm" root ⊢ 0x02‖addr‖slot. The
 //!   trusted root is the CometBFT **AppHash at height H+1** (AppHash at N
@@ -70,7 +70,7 @@ enum Cmd {
         /// AppHash as raw hex (alternative to --header).
         #[arg(long)]
         app_hash: Option<String>,
-        /// E9 trust boundary: --header/--app-hash roots are caller-supplied
+        /// AppHash trust boundary: --header/--app-hash roots are caller-supplied
         /// and NOT light-client-verified, so they are REFUSED by default.
         /// This dev/test opt-in admits them — and taints the verdict.
         #[arg(long, default_value_t = false)]
@@ -165,7 +165,7 @@ fn run_verify(args: VerifyArgs) -> Result<()> {
                     "--format mpt requested, but the proof bytes are protobuf \
                      ics23 CommitmentProofs, not RLP MPT nodes. This chain \
                      (cosmos/evm) does not produce EIP-1186 proofs — use the \
-                     ics23 path with a CometBFT header (G10 finding)."
+                     ics23 path with a CometBFT header (ACL proof-format finding)."
                 );
             }
             false
@@ -180,7 +180,7 @@ fn run_verify(args: VerifyArgs) -> Result<()> {
         verify_mpt(&args, &proof, &h, &g)?
     };
 
-    // Semantics — identical for both formats (the G10 property).
+    // Semantics — identical for both formats (the ACL refusal property).
     let meta = match meta_word {
         Some(word) => decode_meta(&word),
         None => bail!(
@@ -201,7 +201,7 @@ fn run_verify(args: VerifyArgs) -> Result<()> {
         Some(word) => word,
         None => bail!(
             "acl[h][grantee] proven ABSENT — no grant exists; \
-             a KMS must refuse this request (this is the G10 property)"
+             a KMS must refuse this request (this is the ACL refusal property)"
         ),
     };
     if !has_perm(&acl_word, bit) {
@@ -234,9 +234,9 @@ fn verify_ics23(
     g: &[u8; 20],
 ) -> Result<(Option<[u8; 32]>, Option<[u8; 32]>, String)> {
     // Root candidate: AppHash, from --app-hash or a CometBFT header file.
-    // Both are CALLER-SUPPLIED, i.e. unverified — the E9 gate below decides
+    // Both are CALLER-SUPPLIED, i.e. unverified — the trust gate below decides
     // whether that is acceptable. A light-client-verified source would enter
-    // here as AppHashSource::LightClientVerified (KMS service, B2+).
+    // here as AppHashSource::LightClientVerified (KMS service).
     let (app_hash, header_height) = match (&args.app_hash, &args.header) {
         (Some(hexstr), _) => (parse_hex::<32>(hexstr).context("--app-hash")?, None),
         (None, Some(path)) => {
@@ -256,7 +256,7 @@ fn verify_ics23(
         ),
     };
 
-    // E9 trust boundary: refuse unverified roots unless the dev flag opted in.
+    // AppHash trust boundary: refuse unverified roots unless the dev flag opted in.
     let admitted = TrustPolicy {
         allow_unverified: args.allow_unverified_header,
     }

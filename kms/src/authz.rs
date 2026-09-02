@@ -1,4 +1,4 @@
-//! B4: the §7.4 authorization predicate — the committee's servability
+//! The §7.4 authorization predicate — the committee's servability
 //! decision, computed ONLY from proven state.
 //!
 //! This is the moment the KMS decides whether to produce a partial for a
@@ -6,18 +6,18 @@
 //!
 //! 1. **Inputs are proven, not asserted.** The predicate takes ACL state
 //!    that arrived through the ICS23 read path under an [`AdmittedAppHash`]
-//!    (E9) — a raw "trust me" word cannot even be passed in, and an
+//!    — a raw "trust me" word cannot even be passed in, and an
 //!    untrusted (dev-tainted) root yields at most a tainted verdict.
 //! 2. **Semantics mirror the chain exactly.** The rules are the shipped
-//!    `checkServable` in `chain/celard/precompiles/fhe/fhe.go` (D1.5/D1.6,
-//!    G9): re-encryption is servable for the handle's owner or a holder of
+//!    `checkServable` in `chain/celard/precompiles/fhe/fhe.go`, against the
+//!    ACL storage layout: re-encryption is servable for the handle's owner or a holder of
 //!    `reencryptToSelf`; reveal ONLY for a holder of the explicit `reveal`
 //!    grant (the owner gets nothing for free); unknown or absent state
 //!    refuses. Divergence between chain and KMS here would let the two
 //!    disagree about authorization — the exact seam §7.4 exists to close.
 //! 3. **Refusal is the default.** Every failure mode — absent handle,
 //!    absent grant, wrong permission, untrusted root — refuses with a
-//!    stated reason. The KMS never guesses (G10 refusal property).
+//!    stated reason. The KMS never guesses (the ACL refusal property).
 //!
 //! The fraud side of §7.4 (`fraud.rs`) is this predicate run in the other
 //! direction: evidence that a seat served a request this predicate refuses.
@@ -51,7 +51,7 @@ pub struct Request {
 /// the OUTPUT of the ICS23 read path, never hand-assembled from RPC values.
 #[derive(Debug, Clone)]
 pub struct ProvenAclState {
-    /// The root everything below was proven against (E9 gate applied).
+    /// The root everything below was proven against (trusted-root gate applied).
     pub root: AdmittedAppHash,
     /// handleMeta[h], decoded — None if proven ABSENT.
     pub meta: Option<HandleMeta>,
@@ -65,7 +65,7 @@ pub struct ProvenAclState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     Servable {
-        /// false ⇔ the root was dev-tainted (§ E9) — not a production verdict.
+        /// false ⇔ the root was dev-tainted — not a production verdict.
         trusted_root: bool,
     },
     Refused {
@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn tainted_root_taints_the_verdict() {
-        // E9 carried through: a dev root can authorize, but never untainted.
+        // Trust boundary carried through: a dev root can authorize, but never untainted.
         let v = evaluate(
             &req(RequestKind::Reencrypt, OWNER),
             &state(Some(meta(OWNER, true)), None, false),

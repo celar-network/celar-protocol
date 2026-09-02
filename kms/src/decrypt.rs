@@ -1,7 +1,7 @@
-//! B2: threshold decryption with noise flooding (§7.2) — the reveal path.
+//! Threshold decryption with noise flooding (§7.2) — the reveal path.
 //!
 //! Flow (upstream NoiseFloodSmall mode, the §7.2 flooding default):
-//! 1. encrypt the fixture value under pk_G (compact public key from B1's DKG);
+//! 1. encrypt the fixture value under pk_G (compact public key from the DKG);
 //! 2. **switch-and-squash** the ciphertext to the large parameter set with
 //!    the server key's noise-squashing key (done once, public material only);
 //! 3. each party: Z128 small session → noise-flood preprocessing → partial
@@ -9,13 +9,13 @@
 //!
 //! The inner decryption path is SWAPPABLE by construction (onboarding design
 //! constraint): upstream ships both `SecureOnlineNoiseFloodDecryption`
-//! (flooding, wired here) and a bitdec path (the A-Q13-style alternative) —
+//! (flooding, wired here) and a bitdec path (the MPC-rounding alternative) —
 //! switching means one type parameter, not a rewrite.
 //!
 //! Honest labels: λ_stat and the flooding parameters are those of the
 //! upstream parameter set and are UNCHARACTERISED by us (recorded in the
-//! report, not asserted). `--shares-dir` decouples shares from pk so B2-M2
-//! can prove B5's "old shares dead" claim functionally.
+//! report, not asserted). `--shares-dir` decouples shares from pk so a later
+//! milestone can prove resharing's "old shares dead" claim functionally.
 
 use std::fs;
 use std::path::Path;
@@ -161,7 +161,7 @@ pub async fn run_local_threshold_decrypt(
         .context("slot 0 empty")?;
     // (tfhe 1.6 → 1.7: into_raw_parts gained a 4th member,
     // ReRandomizationMetadata — dropped here; this decrypt path never
-    // re-randomizes. NOTE for G6/A5: upstream now carries re-randomization
+    // re-randomizes. NOTE for G6 and the op set: upstream now carries re-randomization
     // metadata ON the ciphertext, which the op-stream's §7 deterministic
     // re-randomization design should be checked against.)
     let (radix, _, _, _) = ct.into_raw_parts();
@@ -317,9 +317,9 @@ pub async fn run_local_threshold_decrypt(
     let (mode, lambda_stat, flooding_params) = match session_kind {
         DecryptSession::Large => (
             "NoiseFloodLarge (TUniform, production)".to_string(),
-            // Characterised at last — by the E22(a) margin analysis, not by
+            // Characterised at last — by the flooding-margin analysis, not by
             // assumption: ceiling 50 with 2x headroom on this path
-            // (tasks/B3/02 §9), deployed via the celar fork.
+            // (see the margin note), deployed via the celar fork.
             "50 (STATSEC_TUNIFORM, celar fork; ceiling analysis in the margin note)",
             "TUniform(120) x2 summed; mask < 2^121, margin 2^122",
         ),

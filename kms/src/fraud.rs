@@ -1,4 +1,4 @@
-//! B4: §7.4 fraud-proof verification — an unauthorized partial is
+//! §7.4 fraud-proof verification — an unauthorized partial is
 //! self-contained evidence.
 //!
 //! The §7.4 claim: if a committee seat serves a decryption-bearing request
@@ -14,7 +14,7 @@
 //!   at the record's height — NOT an eth_getProof JSON blob but our own
 //!   canonical envelope, verified here from bytes up.
 //!
-//! Verification chain: admit the root (E9 gate — **fraud claims require a
+//! Verification chain: admit the root (**fraud claims require a
 //! light-client-verified root**; a "fraud proof" against a dev-tainted root
 //! proves nothing and is rejected as evidence) → re-prove both slots →
 //! run the §7.4 predicate → it must REFUSE → check the seat's signature.
@@ -24,12 +24,12 @@
 //!
 //! Deliberately deferred (stated, not hidden):
 //! - **Seat signature scheme.** Real serving commitments will be bound to
-//!   the DKG/partial-decryption material (B2; the W8 accountable-decryption
-//!   construction strengthens this further — request-bound partials via
-//!   ek_i). Until B2 lands, [`SeatSignatureVerifier`] is a trait; production
-//!   wiring chooses the scheme when the keys exist.
-//! - **Slash wiring** is chain-side (severe slash on conviction) — routed
-//!   through the eng work orders, since it touches `celard` and possibly a
+//!   the DKG/partial-decryption material (the accountable-decryption
+//!   construction of §7.4 strengthens this further — request-bound partials
+//!   via ek_i). Until the seat signing keys land, [`SeatSignatureVerifier`]
+//!   is a trait; production wiring chooses the scheme when the keys exist.
+//! - **Slash wiring** is chain-side (severe slash on conviction) — tracked
+//!   separately, since it touches `celard` and possibly a
 //!   new surface beside the frozen ABI.
 
 use anyhow::{Context, Result};
@@ -140,9 +140,9 @@ fn check_entry_binding(record: &RequestRecord, entry: &ArchivedSeatCommitment) -
     Ok(())
 }
 
-/// Read seam over the chain's per-epoch commitment archive (engineer #1's
-/// D7 store; the eventual impl proves reads via ICS23 like every other
-/// chain fact the KMS consumes). The shape is the E25 answer: point read
+/// Read seam over the chain's per-epoch commitment archive (the chain-side
+/// archive store; the eventual impl proves reads via ICS23 like every other
+/// chain fact the KMS consumes). The shape agreed for archived reads: point read
 /// on (epoch, seat_role), plus two NEVER-pruned bounds that make absence
 /// decidable rather than inferred from a missing key.
 pub trait EpochCommitmentArchive {
@@ -196,7 +196,8 @@ fn resolve_epoch(
 /// Verifies a seat's signature over its serving commitment, against that
 /// seat's archived commitment FOR THE EPOCH THE RECORD NAMES — not the
 /// current one; that is the whole point of the archive. The concrete scheme
-/// arrives with B2's key material (and per the A-Q15 constraints it becomes
+/// arrives with the seat signing keys (and under the accountable-decryption
+/// review constraints it becomes
 /// a ZK relation, not a signature — this trait is the seam, and its shape
 /// already carries the commitment so the seam does not move again).
 pub trait SeatSignatureVerifier {
@@ -225,7 +226,7 @@ pub struct FraudEvidence {
     /// AppHash of the header at `record.header_height` (the root the slot
     /// proofs verify against). Its VERIFICATION status is supplied by the
     /// caller as an [`AppHashSource`] — evidence bytes cannot self-certify
-    /// trust (that is the whole E9 point).
+    /// trust (that is the whole point of the trusted-root requirement).
     pub app_hash: [u8; 32],
     pub meta_proof: SlotProofBundle,
     pub acl_proof: SlotProofBundle,
@@ -266,7 +267,7 @@ pub fn verify_fraud(
             .map_err(|_| anyhow::anyhow!("malformed evidence: seat role {r} exceeds u32"))?,
     };
 
-    // 1) E9 gate, strict: convictions demand a trusted root.
+    // 1) Trusted-root gate, strict: convictions demand a trusted root.
     let admitted = match TrustPolicy::default().admit(root_source) {
         Ok(a) => a,
         Err(e) => {
@@ -613,7 +614,7 @@ mod tests {
         assert!(TestSigner.verify(2, &c2, &msg, &sig_by_2));
     }
 
-    // ---- E23: the archive resolution verdicts ----------------------------
+    // ---- Archive resolution verdicts -------------------------------------
 
     #[test]
     fn pruned_epoch_is_time_barred_not_forged() {
@@ -664,7 +665,7 @@ mod tests {
 
     #[test]
     fn epoch_n_evidence_survives_the_n_plus_1_reshare() {
-        // THE E23 regression: the case that silently failed before the
+        // THE archive-retention regression: the case that silently failed before the
         // archive existed. A seat serves under epoch 5; the committee
         // reshares to epoch 6, every live commitment changes; the epoch-5
         // evidence must STILL verify — against the ARCHIVED epoch-5
@@ -701,7 +702,7 @@ mod tests {
         }
     }
 
-    // ---- E31 answers: the entry-binding rules ----------------------------
+    // ---- Entry-binding rules ---------------------------------------------
 
     #[test]
     fn serving_before_the_epoch_was_keyed_is_malformed() {

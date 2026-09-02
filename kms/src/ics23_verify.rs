@@ -1,4 +1,4 @@
-//! ICS23 verification path — the G10 finding made real (2026-08-15).
+//! ICS23 verification path — the ACL proof-format finding made real (2026-08-15).
 //!
 //! `cosmos/evm` v0.7.0 `eth_getProof` does NOT return Ethereum MPT nodes.
 //! Each proof entry is a protobuf-encoded `ics23.CommitmentProof`, and each

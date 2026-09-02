@@ -1,7 +1,8 @@
-//! Celar ACL semantics over proven storage words — the KMS side of G10.
+//! Celar ACL semantics over proven storage words — the KMS side of the
+//! ACL read path.
 //!
 //! Slot derivation and word layout mirror the on-chain source of truth,
-//! `chain/celard/precompiles/fhe/{storage.go,STORAGE-LAYOUT.md}` (G9):
+//! `chain/celard/precompiles/fhe/{storage.go,STORAGE-LAYOUT.md}`:
 //!
 //!   handleMeta[h]   at keccak256(h ‖ uint256(1)) → owner(20) ‖ ktype(1) ‖ flags(1)
 //!   acl[h][grantee] at keccak256(pad32(grantee) ‖ keccak256(h ‖ uint256(2)))

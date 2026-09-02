@@ -1,4 +1,4 @@
-//! B5: proactive resharing at epoch boundaries (whitepaper §7.5).
+//! Proactive resharing at epoch boundaries (whitepaper §7.5).
 //!
 //! Same-committee share refresh over upstream's `reshare_sk_same_set`
 //! (v0.13.x — the reason this tag was pinned): every party's share vector is
@@ -13,11 +13,11 @@
 //! commitments. Verification checks the chain, the pk_G invariant, and that
 //! every commitment changed ("old shares dead" at artifact level — the
 //! cryptographic statement is the protocol's; the *functional* proof, decrypt
-//! same ciphertext before/after, lands with B2's threshold decryption).
+//! same ciphertext before/after, lands with threshold decryption).
 //!
 //! Honest labels: preprocessing here is `dummy-randoms` (reshare consumes only
 //! random sharings; the secure dual-ring offline phase — Z128 AND Z64, each
-//! needing its own PRSS — is a documented swap point, same discipline as B1's
+//! needing its own PRSS — is a documented swap point, same discipline as the DKG's
 //! H1). Local runtime + dev share files first; ceremony-node mode follows the
 //! H2 pattern when this is green.
 
