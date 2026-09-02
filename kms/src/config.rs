@@ -4,8 +4,12 @@
 //! reconstruction quorum vs robustness bound — the v0.9.10 disclosure):
 //!
 //! - `reconstruction_quorum` — Celar's t = ⌊3c/4⌋+1 (§7.7 genesis rule;
-//!   79 at c=100). The number of partials a requester must combine, and the
-//!   quorum the servability/combination layer enforces.
+//!   79 at c=100 as the DESIGN TARGET). The number of partials a requester
+//!   must combine, and the quorum the servability/combination layer enforces.
+//!   NOTE (v0.9.22): production ceremonies under the current preprocessing
+//!   engine deploy a threshold of 24 at c=100 — 25 seats suffice to
+//!   reconstruct. 79 is not yet what is deployed; see whitepaper §7.1 for
+//!   both figures and the path between them.
 //! - `session_threshold` — the MPC corruption bound handed to the upstream
 //!   protocol session (their tests run n=4/t=1, n=5/t=1). Defaults to
 //!   ⌊(c−1)/3⌋, the classic robust-MPC bound.
