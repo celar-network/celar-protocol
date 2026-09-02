@@ -1,7 +1,7 @@
 # Celar Protocol — monorepo
 
 Standalone confidential smart-contract L1: threshold FHE (Zama TFHE-rs), a
-79-of-100 KMS committee, stealth addresses, and a ZK shielded pool, built on
+threshold KMS committee (24-of-100 deployed, 79 target), stealth addresses, and a ZK shielded pool, built on
 Cosmos SDK + Cosmos EVM. The layout maps to the whitepaper (v0.9.20) and the
 implementation plan. The backend (FHE) was decided via bake-off; the
 precompile ABI in `fhe/backend-adapter` is held fixed and backend-agnostic.

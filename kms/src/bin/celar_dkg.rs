@@ -1,5 +1,5 @@
 //! celar-dkg — run a local genesis-mode DKG and publish its transcript, or
-//! re-verify a published transcript. B1 skeleton CLI.
+//! re-verify a published transcript. Skeleton CLI.
 //!
 //!   celar-dkg run    [--parties N] [--config cfg.json] [--out DIR] [--write-dev-keys]
 //!   celar-dkg verify --transcript FILE [--keys-dir DIR]
@@ -60,7 +60,7 @@ enum Cmd {
         #[arg(long)]
         keys_dir: Option<PathBuf>,
     },
-    /// B5: proactive same-set reshare — new epoch of shares from the previous
+    /// Proactive same-set reshare — new epoch of shares from the previous
     /// epoch's dev share files; pk_G invariant; optional recovery demo.
     Reshare {
         /// Directory holding the previous epoch (transcript.json or
@@ -79,9 +79,9 @@ enum Cmd {
         #[arg(long)]
         drop_role: Option<usize>,
     },
-    /// B2: n-party noise-flooded threshold decryption of a fixture value
+    /// N-party noise-flooded threshold decryption of a fixture value
     /// encrypted under the DKG's pk_G. --shares-dir may point at a LATER
-    /// epoch (B5 functional proof: reshared shares decrypt the same pk_G).
+    /// epoch (resharing functional proof: reshared shares decrypt the same pk_G).
     Decrypt {
         /// Directory with transcript.json + pk_g.bin (genesis DKG output).
         #[arg(long)]
@@ -113,7 +113,7 @@ enum Cmd {
         #[arg(long, default_value = "noise-probe.json")]
         out: PathBuf,
     },
-    /// B3: threshold RE-ENCRYPTION (§7.3) — seats produce masked partials,
+    /// Threshold RE-ENCRYPTION (§7.3) — seats produce masked partials,
     /// the requester combines them locally. No intermediary sees plaintext.
     Reencrypt {
         #[arg(long)]

@@ -52,7 +52,7 @@ aes-prng = "=0.2.1"
 anyhow = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bincode = "1.3"
-# G10 ICS23 path: cosmos/evm eth_getProof returns ics23 (IAVL + multistore)
+# ICS23 path: cosmos/evm eth_getProof returns ics23 (IAVL + multistore)
 # proofs, not MPT nodes — verified against the Tendermint AppHash.
 ics23 = "0.12"
 prost = "0.13"

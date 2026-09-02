@@ -1,4 +1,4 @@
-//! B2-M3: decryption-budget accounting (§7.2 "Query budget (F4)" and
+//! Decryption-budget accounting (§7.2 "Query budget" and
 //! "Decryption-oracle threat model and budget granularity", whitepaper
 //! v0.9.15 — both paragraphs are PUBLISHED normative text, not parked).
 //!
@@ -11,7 +11,7 @@
 //! Normative points implemented here, each traceable to the text:
 //!
 //! * **Per-key-epoch.** The budget is scoped to a key epoch and **§7.5
-//!   proactive resharing resets it** — which is why B5's epoch chain and this
+//!   proactive resharing resets it** — which is why the epoch chain and this
 //!   module share an epoch number.
 //! * **λ_stat relation.** "λ_stat ≥ λ_target + log₂(Q_max), λ_target = 40
 //!   (equivalently: prefer λ_stat = 64)" ⇒ **Q_max ≤ 2^(λ_stat − λ_target)**.
@@ -30,7 +30,7 @@
 //!   work, and returns a refusal rather than performing a partial operation.
 //! * **Public counters.** "Budget consumption counters are public per
 //!   contract — oracle pressure is an observable, not a silent risk."
-//!   [`EpochBudget::counters`] is that observable (feeds tracker G1's
+//!   [`EpochBudget::counters`] is that observable (feeds the G1
 //!   dashboard line).
 //!
 //! `Q_max` itself is ⟦TBD, sized from §14.3 volume projections⟧ in the spec,
@@ -98,7 +98,7 @@ pub const DEPLOYED_FLOODING_STATSEC: u32 = 50;
 /// (Earlier analysis said 51; that neglected the additive 2^70 term, which
 /// upstream's own tightness argument absorbs via PRSS-set slack that does
 /// not exist on the flat path. 50 leaves 2× residual headroom; 51 leaves
-/// none, which also matters for corruption resistance — E24.)
+/// none, which also matters for corruption resistance.)
 ///
 /// Raising the library's STATSEC above this silently corrupts plaintexts:
 /// there is no upstream assertion that the mask fits under Δ/2, and the

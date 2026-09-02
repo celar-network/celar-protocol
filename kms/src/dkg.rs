@@ -1,4 +1,4 @@
-//! B1: local n-party DKG over `threshold-execution`, producing the
+//! Local n-party DKG over `threshold-execution`, producing the
 //! transcript artifact.
 //!
 //! Two offline phases (config `preprocessing`):
@@ -188,10 +188,10 @@ async fn run_parties_secure(cfg: &CommitteeConfig) -> Vec<PartyResult> {
     .await
 }
 
-/// Secure LARGE-session offline phase (W33(5) closure): the genesis-scale
+/// Secure LARGE-session offline phase: the genesis-scale
 /// path. Same VSS/coinflip/double-sharing offline machinery upstream ships
 /// but never wires into its own server — no PRSS, no `binom(n,t)` cap, and
-/// the flooding masks it feeds carry no `binom` factor (the E22(a) path
+/// the flooding masks it feeds carry no `binom` factor (the large-session path
 /// with the 2048× headroom).
 ///
 /// Sync network mode: the offline sub-protocols (reliable broadcast, VSS)
@@ -236,7 +236,7 @@ async fn run_parties_secure_large(cfg: &CommitteeConfig) -> Vec<PartyResult> {
             // We use a larger chunk than their tests — bounded, from config
             // (`preproc_chunk`, default 512), accumulating into the base
             // store. Chunk size trades peak memory against rounds; it is a
-            // measured knob, not a guess — see tasks/B1/02.
+            // measured knob, not a guess — see the ceremony measurements.
             let chunk: usize = chunk_size.max(1);
             let mut large_preproc =
                 threshold_execution::online::preprocessing::memory::InMemoryBasePreprocessing::<

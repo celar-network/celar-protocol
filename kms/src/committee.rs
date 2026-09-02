@@ -1,4 +1,4 @@
-//! B6: permissioned committee mode (whitepaper §7.7, genesis).
+//! Permissioned committee mode (whitepaper §7.7, genesis).
 //!
 //! At genesis the committee is not stake-sampled — it is a **vetted roster**:
 //! c ∈ [30, 50] named members, reconstruction quorum t = ⌊3c/4⌋+1, fixed for
@@ -190,7 +190,7 @@ impl CommitteeRoster {
                 // binom(n,t) ≤ 2047 — it CANNOT run at genesis scale
                 // (binom(30,9) ≈ 14.3M). The correct target is
                 // `SecureLarge`, but that requires t ≤ ⌊(c−1)/4⌋ (the n/4
-                // corruption bound, W41), so switching it changes what
+                // corruption bound), so switching it changes what
                 // session_threshold this function must derive and what
                 // the roster tests assert. Scheduled as its own change,
                 // not smuggled into a compile fix.
