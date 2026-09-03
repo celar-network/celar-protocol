@@ -342,8 +342,13 @@ mod closed_form {
     //! the 2^128 / float128 modulus. The output bound is c·σ, with c the tail
     //! cut; the scheme was parameterised so this bound stays under 2^70.
     //!
-    //! NOTE: the tail-cut multiplier below is the 2^-64 convention value and is
-    //! provisional — it is the one number here not read from a parameter set.
+    //! The tail-cut multiplier is the scheme's own fixed constant for a ring
+    //! of dimension one: from the classical estimate
+    //! Pr[|x| > c·σ] ≤ erfc(c/√2), the value 13.15 puts the per-value
+    //! exceedance below 2^-128, matching the scheme's overall failure target.
+    //! Read from the source document, not assumed — an earlier draft used the
+    //! looser 9.5 (a 2^-64 tail convention); the derived bounds clear the
+    //! ceiling under either, so nothing downstream moved when this was pinned.
 
     /// One switch-and-squash parameter set, large-modulus variables.
     struct SnsParams {
@@ -363,7 +368,9 @@ mod closed_form {
 
     const Q_LOG: f64 = 128.0;
     const NU_FFT: f64 = 41.4;
-    const Z_TAILCUT: f64 = 9.5;
+    /// c_err,1 — the scheme's tail-cut constant for ring dimension one:
+    /// erfc(13.15/√2) < 2^-128.
+    const Z_TAILCUT: f64 = 13.15;
     const CEILING_LOG2: f64 = 70.0;
 
     /// Test parameter set: noise-squashing glwe_dimension 1, polynomial_size
