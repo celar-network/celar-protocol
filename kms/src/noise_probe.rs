@@ -323,3 +323,142 @@ pub fn run_noise_probe_centralized(
     fs::write(out_path, serde_json::to_string_pretty(&report)?)?;
     Ok(report)
 }
+
+#[cfg(test)]
+mod closed_form {
+    //! The switch-and-squash output-noise standard deviation, evaluated in
+    //! closed form from the underlying scheme's published noise equations.
+    //!
+    //! The probes above MEASURE this noise; this module DERIVES it, so the two
+    //! can be checked against each other without a key generation. It locks in
+    //! both the arithmetic and the deployed noise-squashing constants: if a
+    //! parameter set changes, this test is the checkpoint that forces the noise
+    //! figure to be re-derived rather than silently assumed.
+    //!
+    //! The radicand is σ̄_BS² + FFTNoise. σ̄_BS² is the bootstrap output-noise
+    //! variance in the large (u128) modulus; FFTNoise is the additional error
+    //! absorbed from the FFT-based ring multiplication, with exponent 41.4 for
+    //! the 2^128 / float128 modulus. The output bound is c·σ, with c the tail
+    //! cut; the scheme was parameterised so this bound stays under 2^70.
+    //!
+    //! NOTE: the tail-cut multiplier below is the 2^-64 convention value and is
+    //! provisional — it is the one number here not read from a parameter set.
+
+    /// One switch-and-squash parameter set, large-modulus variables.
+    struct SnsParams {
+        /// GLWE dimension (noise-squashing `glwe_dimension`).
+        w: f64,
+        /// Polynomial size (noise-squashing `polynomial_size`).
+        n: f64,
+        /// Decomposition base-log; the base itself is 2^`beta_log`.
+        beta_log: f64,
+        /// Decomposition level count.
+        nu_bk: f64,
+        /// TUniform bound of the noise-squashing GLWE key noise.
+        tuni_b: f64,
+        /// Input LWE dimension to the blind rotation (compute `lwe_dimension`).
+        ell: f64,
+    }
+
+    const Q_LOG: f64 = 128.0;
+    const NU_FFT: f64 = 41.4;
+    const Z_TAILCUT: f64 = 9.5;
+    const CEILING_LOG2: f64 = 70.0;
+
+    /// Test parameter set: noise-squashing glwe_dimension 1, polynomial_size
+    /// 256, decomp_base_log 33, decomp_level_count 2, glwe noise TUniform(0);
+    /// compute lwe_dimension 1. (Deliberately tiny and insecure — a single
+    /// blind-rotation external product, so it is a degenerate corner for the
+    /// sum-of-uniforms variance model, not a validation point.)
+    const TEST: SnsParams = SnsParams {
+        w: 1.0,
+        n: 256.0,
+        beta_log: 33.0,
+        nu_bk: 2.0,
+        tuni_b: 0.0,
+        ell: 1.0,
+    };
+
+    /// Production parameter set: noise-squashing glwe_dimension 2,
+    /// polynomial_size 2048, decomp_base_log 24, decomp_level_count 3, glwe
+    /// noise TUniform(27); compute lwe_dimension 886.
+    const PROD: SnsParams = SnsParams {
+        w: 2.0,
+        n: 2048.0,
+        beta_log: 24.0,
+        nu_bk: 3.0,
+        tuni_b: 27.0,
+        ell: 886.0,
+    };
+
+    /// Variance of a TUniform distribution with bound `b`: (2^(2b+1) + 1) / 6.
+    fn tuniform_var(b: f64) -> f64 {
+        (2f64.powf(2.0 * b + 1.0) + 1.0) / 6.0
+    }
+
+    /// σ̄_BS² + FFTNoise — the radicand of the output-noise bound.
+    fn variance(p: &SnsParams) -> f64 {
+        let q2 = 2f64.powf(2.0 * Q_LOG);
+        let beta2 = 2f64.powf(2.0 * p.beta_log);
+        let beta_pow = 2f64.powf(2.0 * p.nu_bk * p.beta_log);
+        let wn = p.w * p.n;
+        let sig_bk2 = tuniform_var(p.tuni_b);
+
+        // Key-noise, gadget-rounding, and sample-extraction terms.
+        let t_key = p.nu_bk * (p.w + 1.0) * p.n * (beta2 + 2.0) / 12.0 * sig_bk2;
+        let t_gadget = (q2 - beta_pow) / (24.0 * beta_pow) * (1.0 + wn / 2.0);
+        let t_extract = wn / 32.0 + (1.0 - wn / 2.0).powi(2) / 16.0;
+        let sigma_bs_sq = p.ell * (t_key + t_gadget + t_extract);
+
+        let fft = 2f64.powf(NU_FFT) * p.ell * (p.w + 1.0) * p.n * p.n * beta2 * p.nu_bk;
+        sigma_bs_sq + fft
+    }
+
+    /// log2 of the output-noise standard deviation.
+    fn sigma_log2(p: &SnsParams) -> f64 {
+        variance(p).log2() / 2.0
+    }
+
+    #[test]
+    fn sigma_matches_the_hand_derivation() {
+        let test = sigma_log2(&TEST);
+        let prod = sigma_log2(&PROD);
+        assert!(
+            (test - 63.50).abs() < 0.15,
+            "test sigma log2 = {test}, expected about 63.50"
+        );
+        assert!(
+            (prod - 64.16).abs() < 0.15,
+            "production sigma log2 = {prod}, expected about 64.16"
+        );
+    }
+
+    #[test]
+    fn bound_stays_under_the_design_ceiling() {
+        for (name, p) in [("test", &TEST), ("production", &PROD)] {
+            let bound = sigma_log2(p) + Z_TAILCUT.log2();
+            assert!(
+                bound < CEILING_LOG2,
+                "{name}: output bound log2 = {bound} exceeds the 2^70 ceiling"
+            );
+        }
+    }
+
+    #[test]
+    fn production_derivation_corroborates_the_measured_maximum() {
+        // The centralized probe recorded a maximum of about 2^66.1 at the
+        // production parameters. The derived standard deviation must sit below
+        // that maximum (a sample maximum exceeds its sigma), the maximum must
+        // clear the ceiling, and the gap between them must be a few bits — the
+        // ratio a heavy-tailed draw of a few thousand samples produces — not
+        // tens of bits, which would mean the derivation or the probe drifted.
+        const MEASURED_MAX_LOG2: f64 = 66.1;
+        let sigma = sigma_log2(&PROD);
+        assert!(sigma < MEASURED_MAX_LOG2, "derived sigma {sigma} is not below the measured maximum");
+        assert!(MEASURED_MAX_LOG2 < CEILING_LOG2, "measured maximum does not clear the ceiling");
+        assert!(
+            MEASURED_MAX_LOG2 - sigma < 4.0,
+            "maximum-to-sigma gap unexpectedly large — derivation or probe drifted"
+        );
+    }
+}
