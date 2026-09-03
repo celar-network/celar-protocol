@@ -35,7 +35,8 @@ use threshold_execution::tfhe_internals::private_keysets::PrivateKeySet;
 use threshold_execution::tfhe_internals::public_keysets::FhePubKeySet;
 use threshold_types::role::Role;
 
-use crate::config::CommitteeConfig;
+use crate::config::{CommitteeConfig, ParamsChoice};
+use crate::dkg::dkg_params;
 use crate::transcript::{share_file, Transcript, PK_FILE};
 use crate::EXTENSION_DEGREE;
 
@@ -206,6 +207,118 @@ pub fn run_noise_probe(
         caveat: "OBSERVED distribution over N samples — not a bound. The claimable slack \
                  is decided by the analytical tail argument (routed to research), for which \
                  this is the sanity anchor.",
+    };
+    fs::write(out_path, serde_json::to_string_pretty(&report)?)?;
+    Ok(report)
+}
+
+/// CENTRALIZED noise probe — the production-parameter path.
+///
+/// The threshold probe above holds all c committee keysets in one address
+/// space, which OOMs at NIST parameters even at the minimum committee (c=4,
+/// >121 GiB — the single-process simulator wall, same root as the c=100
+/// finding). But the post-squash noise is a property of the FHE PARAMETERS,
+/// not the threshold sharing: `partial_decrypt128` computes `b − ⟨a,sᵢ⟩`
+/// per share and reconstructs to `b − ⟨a,s⟩`; the centralized analogue is
+/// one `decrypt_lwe_ciphertext` under the FULL (unshared) SnS key, which
+/// yields the identical value. So we generate ONE keyset (≈1/c the memory,
+/// no DKG) and read the noise directly — the correct instrument for a
+/// parameter-set property, and it runs at NIST params on a laptop.
+pub fn run_noise_probe_centralized(
+    params_choice: ParamsChoice,
+    ciphertexts: usize,
+    chain_ops: usize,
+    out_path: &Path,
+) -> Result<NoiseProbeReport> {
+    use threshold_execution::tfhe_internals::test_feature::{
+        gen_uncompressed_key_set, ClientKeyView,
+    };
+
+    let params = dkg_params(params_choice);
+    let mut rng = aes_prng::AesRng::from_random_seed();
+    // One centralized keyset: ClientKey + ServerKey(+SnS key) + CompactPublicKey.
+    let keyset = gen_uncompressed_key_set(params, tfhe::Tag::default(), &mut rng);
+    let pk = &keyset.public_keys;
+
+    tfhe::set_server_key(pk.server_key.clone());
+    let int_server_key: &tfhe::integer::ServerKey = pk.server_key.as_ref();
+    let sns_key = pk
+        .server_key
+        .noise_squashing_key()
+        .context("server key has no noise-squashing key")?;
+    // The full SnS GLWE key viewed as an LWE key — the centralized
+    // counterpart of each party's `glwe_secret_key_share_sns_as_lwe`.
+    let sns_lwe_sk = ClientKeyView::new(&keyset.client_key)
+        .raw_glwe_client_sns_key_as_lwe()
+        .context("client key has no SnS GLWE key")?;
+
+    let mut logs: Vec<f64> = Vec::new();
+    for _ in 0..ciphertexts {
+        let compact = tfhe::CompactCiphertextList::builder(&pk.public_key)
+            .push(0u64)
+            .build();
+        let expanded = compact.expand().context("expanding compact list")?;
+        let ct: tfhe::FheUint64 = expanded
+            .get(0)
+            .context("compact list slot 0")?
+            .context("slot 0 empty")?;
+
+        let mut acc = ct;
+        for _ in 0..chain_ops {
+            let addend: tfhe::FheUint64 = tfhe::CompactCiphertextList::builder(&pk.public_key)
+                .push(0u64)
+                .build()
+                .expand()
+                .context("expanding addend")?
+                .get(0)
+                .context("addend slot")?
+                .context("addend empty")?;
+            acc = &acc + &addend;
+        }
+        let (radix, _, _, _) = acc.into_raw_parts();
+        let small_ct = RadixOrBoolCiphertext::Radix(radix);
+        let large_ct = match &small_ct {
+            RadixOrBoolCiphertext::Radix(c) => SnsRadixOrBoolCiphertext::Radix(
+                sns_key
+                    .squash_radix_ciphertext_noise(int_server_key, c)
+                    .map_err(|e| anyhow::anyhow!("switch-and-squash failed: {e:?}"))?,
+            ),
+            _ => bail!("fixture is radix"),
+        };
+
+        for block in large_ct.packed_blocks() {
+            // The full-key raw phase b − ⟨a,s⟩, no rounding — identical to
+            // the reconstructed threshold partial, measured directly.
+            let phase = tfhe::core_crypto::prelude::decrypt_lwe_ciphertext(
+                &sns_lwe_sk,
+                block.lwe_ciphertext(),
+            );
+            logs.push(centered_magnitude_log2(phase.0));
+        }
+    }
+
+    logs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let samples = logs.len();
+    let max_log2 = *logs.last().unwrap_or(&0.0);
+    let mean_log2 = logs.iter().sum::<f64>() / samples.max(1) as f64;
+    let p99_log2 = logs[((samples as f64 * 0.99) as usize).min(samples.saturating_sub(1))];
+
+    let report = NoiseProbeReport {
+        schema: NOISE_PROBE_SCHEMA.to_string(),
+        parties: 1,
+        chain_ops,
+        params: params_choice.name().to_string(),
+        ciphertexts,
+        samples,
+        max_log2,
+        mean_log2,
+        p99_log2,
+        assumed_bound_log2: 70,
+        observed_slack_bits: 70.0 - max_log2,
+        caveat: "CENTRALIZED (single-keyset) measurement — the raw phase under the full SnS \
+                 key, identical to the reconstructed threshold partial but without the \
+                 multi-party memory. Observed distribution, not a bound; the claimable slack \
+                 is the analytical tail argument's (B7.0b), for which this is the anchor.",
     };
     fs::write(out_path, serde_json::to_string_pretty(&report)?)?;
     Ok(report)
