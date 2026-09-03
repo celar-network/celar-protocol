@@ -104,6 +104,47 @@ pub const DEPLOYED_FLOODING_STATSEC: u32 = 50;
 /// there is no upstream assertion that the mask fits under Δ/2, and the
 /// first hard error does not fire until 57.
 pub const MAX_SAFE_LAMBDA_STAT: u32 = 50;
+
+/// log₂ of the assumed post-squash evaluated-noise bound the flooding mask
+/// is sized against (the library's `LOG_B_SWITCH_SQUASH`). Anchored here for
+/// the same reason as [`DEPLOYED_FLOODING_STATSEC`]: the budget's arithmetic
+/// must state, in one place, the constants it is physically backed by.
+pub const LOG_B_EVAL: u32 = 70;
+
+/// log₂ of the flooding-mask sampling bound on the production (large-session
+/// TUniform) path: each flooding term is drawn from a range of half-width
+/// 2^(LOG_B_EVAL + λ_stat) = 2^120.
+pub const LOG_FLOODING_MASK_BOUND: u32 = LOG_B_EVAL + DEPLOYED_FLOODING_STATSEC;
+
+/// log₂ of the LOWER bound on a partial decryption's flooding term —
+/// the two-sided range check.
+///
+/// The §7.2 confidentiality guarantee is a property of the AGGREGATE
+/// flooding mask, and it silently assumes every seat samples honestly. A
+/// seat (or a set of seats sharing a broken or coerced sampler) that floods
+/// with too-small noise under-masks the aggregate with no failure and no
+/// on-chain tell. The §7.4 partial-decryption relation already range-bounds
+/// the flooding term from ABOVE (that side protects decode margin); this
+/// constant adds the floor that makes GROSS under-flooding a proof failure
+/// instead of a silent leak.
+///
+/// Derivation of the value — why 2^70 and not something else:
+/// * Semantically, the mask must be at least as large as the evaluated
+///   noise it exists to drown, so the floor is B_eval = 2^LOG_B_EVAL.
+/// * Statistically, an honest seat draws uniformly from a range of
+///   half-width 2^120, so the check rejects an honest draw with probability
+///   2^70 / 2^120 = 2^-λ_stat — the same probability class the flooding
+///   argument already spends per decryption. The identity
+///   B_min = mask_bound / 2^λ_stat holds by construction, so the honest
+///   false-reject probability is ALWAYS 2^-λ_stat, whatever the parameters.
+/// * Anything materially above 2^70 rejects honest seats more often for no
+///   confidentiality gain; anything below weakens the tell. This floor does
+///   NOT catch a seat flooding slightly under the honest distribution —
+///   that requires proved provenance of the sampled noise, which is a
+///   separate, heavier mechanism.
+pub const LOG_FLOODING_MASK_LOWER_BOUND: u32 =
+    LOG_FLOODING_MASK_BOUND - DEPLOYED_FLOODING_STATSEC;
+
 /// Spec default sub-budget divisor: "Q_max/64 per contract per epoch".
 pub const SUB_BUDGET_DIVISOR: u64 = 64;
 
@@ -423,6 +464,49 @@ mod tests {
         // bound). Everything in 51..=56 corrupts silently. Our cap must sit
         // strictly below the silent band, not just below the error.
         assert!(MAX_SAFE_LAMBDA_STAT < 51);
+    }
+
+    #[test]
+    fn flooding_floor_is_the_evaluated_noise_bound() {
+        // The floor of the two-sided flooding range check must equal the
+        // evaluated-noise bound the mask is sized against: a mask smaller
+        // than the noise it exists to drown is not flooding. If either
+        // constant moves, this forces the floor to be re-derived rather
+        // than silently carried.
+        assert_eq!(LOG_FLOODING_MASK_LOWER_BOUND, LOG_B_EVAL);
+    }
+
+    #[test]
+    fn flooding_floor_rejects_honest_seats_at_the_statistical_parameter() {
+        // The honest false-reject probability of the floor is
+        // mask_lower_bound / mask_bound = 2^-(bound gap). That gap must be
+        // exactly the flooding statistical parameter: the check then costs
+        // the same probability class the flooding argument already spends
+        // per decryption, and no more. A gap smaller than λ_stat means the
+        // floor rejects honest seats too often; a larger gap weakens the
+        // under-flooding tell below the derivation.
+        assert_eq!(
+            LOG_FLOODING_MASK_BOUND - LOG_FLOODING_MASK_LOWER_BOUND,
+            DEPLOYED_FLOODING_STATSEC
+        );
+    }
+
+    #[test]
+    fn flooding_mask_fits_the_decryption_margin_with_the_floor_in_place() {
+        // The margin cross-check at the deployed constants, stated as
+        // arithmetic rather than prose: mask (≤ 2^(bound+1), the two-draw
+        // sum) plus evaluated noise (≤ 2^LOG_B_EVAL) must stay under
+        // Δ/2 = 2^122 — and the floor, sitting below the mask bound by
+        // construction, cannot push anything over it. This is the check
+        // whose absence upstream lets an over-raised statistical parameter
+        // corrupt plaintexts silently.
+        const LOG_DELTA_HALF: u32 = 122;
+        assert!(LOG_FLOODING_MASK_BOUND + 1 < LOG_DELTA_HALF);
+        assert!(LOG_B_EVAL < LOG_FLOODING_MASK_BOUND);
+        // 2^121 + 2^70 < 2^122 exactly, in integers, no logs:
+        let mask_max: u128 = 1u128 << (LOG_FLOODING_MASK_BOUND + 1);
+        let noise_max: u128 = 1u128 << LOG_B_EVAL;
+        assert!(mask_max + noise_max < (1u128 << LOG_DELTA_HALF));
     }
 
     #[test]
