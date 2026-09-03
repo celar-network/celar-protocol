@@ -318,7 +318,8 @@ pub fn run_noise_probe_centralized(
         caveat: "CENTRALIZED (single-keyset) measurement — the raw phase under the full SnS \
                  key, identical to the reconstructed threshold partial but without the \
                  multi-party memory. Observed distribution, not a bound; the claimable slack \
-                 is the analytical tail argument's (B7.0b), for which this is the anchor.",
+                 is decided by the analytical noise-bound derivation, for which this is the \
+                 anchor.",
     };
     fs::write(out_path, serde_json::to_string_pretty(&report)?)?;
     Ok(report)
