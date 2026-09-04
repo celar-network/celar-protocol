@@ -73,3 +73,13 @@ func AttestationKey(height uint64, txIndex, logIndex uint32) []byte {
 	k = binary.BigEndian.AppendUint32(k, txIndex)
 	return binary.BigEndian.AppendUint32(k, logIndex)
 }
+
+// ErrConflictingVerdict is returned when a second conviction names the same
+// seat and epoch on different evidence. Not silently overwritten: the stored
+// record is what a slash was applied against, and replacing it would erase
+// the basis of an action already taken.
+var ErrConflictingVerdict = fmt.Errorf("a different verdict is already recorded for this seat and epoch")
+
+// ErrNoSuchVerdict is returned when punishment is claimed for a conviction
+// that was never recorded.
+var ErrNoSuchVerdict = fmt.Errorf("no verdict recorded for this seat and epoch")
