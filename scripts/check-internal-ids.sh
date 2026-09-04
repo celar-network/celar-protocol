@@ -29,6 +29,30 @@ fail=0
 IDS='\b([ABCDEIQ][0-9]{1,2}|G([7-9]|[1-9][0-9])|D[0-9](\.[0-9]+)?|[EWRT][0-9]{1,2}|SEC[0-9]|LIC[0-9])\b'
 LANES='(Track [ABCD]\b|ENGG-[12]|engineer #[12]|work order|celar-progress-tracker)'
 
+# Text mode: the same two patterns, applied to a message instead of a tree.
+#
+# Messages are the surface that cannot be corrected afterwards. Linear history
+# and no force-push mean a message on the trunk is permanent, and squash-merge
+# makes the PR TITLE the message that lands - so a hook over local commits
+# guards the drafts and misses the artifact. Both surfaces call this.
+#
+# Patterns are shared with the file scan below deliberately: two regexes for
+# one rule is two records of one fact, and this project has paid for that.
+if [ "${1:-}" = "--text" ]; then
+  message=$(cat)
+  hit=0
+  printf '%s\n' "$message" | grep -nE "$IDS" && hit=1
+  printf '%s\n' "$message" | grep -nE "$LANES" && hit=1
+  if [ "$hit" -ne 0 ]; then
+    echo
+    echo "FAIL: internal vocabulary in a message that will be permanent."
+    echo "Describe the thing, don't name our tracker row for it."
+    exit 1
+  fi
+  echo "OK: message carries no internal ids or lane vocabulary."
+  exit 0
+fi
+
 exclude=(--exclude-dir=.git --exclude-dir=out --exclude-dir=lib
          --exclude-dir=cache --exclude-dir=node_modules --exclude-dir=target
          --exclude-dir=scripts)
