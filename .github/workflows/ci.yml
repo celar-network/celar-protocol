@@ -97,6 +97,18 @@ jobs:
         # job that already takes minutes.
         run: cargo test --release --test properties -- --ignored
 
+      - name: coprocessor (op-stream consumer)
+        working-directory: fhe/coprocessor
+        # Its own crate, so nothing above walks it. A crate CI does not know
+        # about is a crate that rots quietly - the same shape as the token
+        # package that only built under a tag nobody was passing.
+        #
+        # --release is not optional once FHE runs here: debug is roughly 100x
+        # slower, the same reason the backend job above uses it. The comment
+        # this replaces said debug was fine "because this one has no FHE in it
+        # yet" - true when written, false one commit later.
+        run: cargo test --release
+
   abi:
     name: abi conformance (python)
     runs-on: ubuntu-latest
