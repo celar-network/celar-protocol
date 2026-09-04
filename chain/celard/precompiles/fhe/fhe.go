@@ -102,6 +102,15 @@ func (p Precompile) Run(
 		h := p.deriveAdmissionHandle(method, argBz, evm.Origin)
 		p.registerHandle(evm.StateDB, h, contract.Caller(),
 			KTypeUnknown, readonly)
+		// Admission emits like every other streamed op. Its result type is
+		// KTypeUnknown, which the schema reserves as a no-claim value: this
+		// call site genuinely cannot know the plaintext width, because the
+		// frozen signature does not carry one and the submitter does not know
+		// it either.
+		if err := p.emitStreamEvent(evm, method, argBz, h,
+			KTypeUnknown, readonly); err != nil {
+			return nil, err
+		}
 		return method.Outputs.Pack(h)
 
 	case TrivialEncryptMethod, AddMethod, SubMethod, LeMethod, LtMethod,
