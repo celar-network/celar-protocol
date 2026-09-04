@@ -15,6 +15,7 @@ publish = false
 
 [dependencies]
 celar_zama = { path = "../backend-adapter/zama" }
+sha3 = "0.10"
 
 [dev-dependencies]
 tfhe = { version = "1.7.0", features = ["integer"] }
