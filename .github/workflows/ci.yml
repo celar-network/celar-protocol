@@ -141,3 +141,13 @@ jobs:
         # runs on every push alongside the suites rather than at a gate
         # nobody reaches until the day it matters.
         run: ./scripts/check-internal-ids.sh
+
+      - name: no internal ids in the pull-request title or body
+        if: github.event_name == 'pull_request'
+        # Squash-merge makes the title the message that lands on the trunk, and
+        # linear history with no force-push makes it permanent. A local hook
+        # guards the branch commits, which are drafts; this guards the artifact.
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | ./scripts/check-internal-ids.sh --text

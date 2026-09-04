@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Refuses a commit message carrying internal work-item ids or lane vocabulary.
+#
+# Enable once per clone:
+#     git config core.hooksPath .githooks
+#
+# A hook cannot be enforced from the repository, which is why this is only half
+# the guard: the other half checks the pull-request title in CI, and that is the
+# text squash-merge actually lands on the trunk.
+exec "$(git rev-parse --show-toplevel)/scripts/check-internal-ids.sh" --text < "$1"
