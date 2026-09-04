@@ -32,7 +32,8 @@ pub type ChainHandle = [u8; 32];
 pub enum Outcome {
     Executed(BackendHandle),
     /// §3: bodies never ride the stream. Admission's aux carries a commitment
-    /// and a DA pointer, so a consumer cannot admit until D2 exists. Reported
+    /// and a DA pointer, so a consumer cannot admit until the data-availability
+    /// layer exists. Reported
     /// as an outcome rather than an error: the stream is well formed and this
     /// consumer simply cannot follow it here yet.
     NeedsCiphertextBody { commitment: [u8; 32] },
