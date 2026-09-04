@@ -97,6 +97,16 @@ jobs:
         # job that already takes minutes.
         run: cargo test --release --test properties -- --ignored
 
+      - name: coprocessor (op-stream consumer)
+        working-directory: fhe/coprocessor
+        # Its own crate, so nothing above walks it. A crate CI does not know
+        # about is a crate that rots quietly - the same shape as the token
+        # package that only built under a tag nobody was passing.
+        #
+        # No --release: this one has no FHE in it yet, so debug is fast and
+        # debug assertions are worth having on a decoder.
+        run: cargo test
+
   abi:
     name: abi conformance (python)
     runs-on: ubuntu-latest
