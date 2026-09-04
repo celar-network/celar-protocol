@@ -14,6 +14,8 @@ edition = "2021"
 publish = false
 
 [dependencies]
+celar_zama = { path = "../backend-adapter/zama" }
 
 [dev-dependencies]
+tfhe = { version = "1.7.0", features = ["integer"] }
 hex = "0.4"

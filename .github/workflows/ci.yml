@@ -103,9 +103,11 @@ jobs:
         # about is a crate that rots quietly - the same shape as the token
         # package that only built under a tag nobody was passing.
         #
-        # No --release: this one has no FHE in it yet, so debug is fast and
-        # debug assertions are worth having on a decoder.
-        run: cargo test
+        # --release is not optional once FHE runs here: debug is roughly 100x
+        # slower, the same reason the backend job above uses it. The comment
+        # this replaces said debug was fine "because this one has no FHE in it
+        # yet" - true when written, false one commit later.
+        run: cargo test --release
 
   abi:
     name: abi conformance (python)
