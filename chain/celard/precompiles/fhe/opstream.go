@@ -125,16 +125,37 @@ func streamOperands(method *abi.Method, argBz []byte) ([]common.Hash, error) {
 // target width. Compute ops carry nothing: their operands and opcode say
 // everything a re-executor needs.
 //
-// verifyInput is absent deliberately: its aux needs a data-availability
-// pointer whose format the frozen text does not give, and which is routed to
-// spec. Emitting it with an invented shape would leave the document not
-// describing the bytes.
+// verifyInput carries a 32-byte commitment to the admitted ciphertext
+// followed by a 32-byte data-availability pointer, so its aux is always 64
+// bytes. The commitment is keccak256 over the submitted byte string exactly
+// as presented, before any deserialisation: the bytes the chain holds, hashed
+// as they arrive.
+//
+// That is deliberately NOT the digest the coprocessor attests over. That one
+// is taken over the deserialised radix parts, which the chain cannot compute
+// because this precompile performs no FHE. Two commitments over two
+// representations, and a consumer checking a fetched ciphertext against this
+// field must hash the retrieved bytes rather than its parsed form.
+//
+// The pointer is all-zero, meaning UNPOPULATED: no availability policy was in
+// force when this event was emitted. Its width is fixed now so that the
+// policy, when it arrives, changes what the bytes mean without changing what
+// they are.
 func streamAux(method *abi.Method, argBz []byte) ([]byte, error) {
 	args, err := method.Inputs.Unpack(argBz)
 	if err != nil {
 		return nil, err
 	}
 	switch method.Name {
+	case VerifyInputMethod:
+		ct, ok := args[0].([]byte)
+		if !ok {
+			return nil, fmt.Errorf("op-stream: verifyInput ciphertext is %T, want []byte", args[0])
+		}
+		aux := make([]byte, 0, 64)
+		aux = append(aux, crypto.Keccak256(ct)...)
+		aux = append(aux, make([]byte, 32)...)
+		return aux, nil
 	case TrivialEncryptMethod:
 		v, ok := args[0].(uint64)
 		if !ok {
