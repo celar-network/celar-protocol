@@ -100,6 +100,7 @@ version = "0.1.0"
 dependencies = [
  "celar_zama",
  "hex",
+ "sha3",
  "tfhe",
 ]
 
