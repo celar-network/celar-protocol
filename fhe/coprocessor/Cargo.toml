@@ -1,0 +1,19 @@
+# Celar coprocessor — the op-stream consumer.
+#
+# The backend library (celar_zama) can compute; this crate is what makes it a
+# participant: it ingests the stream the chain emits, executes each op against
+# the pinned backend, and attests to the result.
+#
+# Deliberately not a dependency of the backend, and the backend is not yet a
+# dependency of this: the decoder needs neither TFHE nor a network, and keeping
+# the first unit dependency-free keeps its test loop in milliseconds.
+[package]
+name = "celar_coprocessor"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+hex = "0.4"
