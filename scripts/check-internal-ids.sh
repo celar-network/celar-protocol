@@ -26,7 +26,12 @@ fail=0
 # deliverable rows. A blanket G would report published vocabulary as a
 # leak, and a check that fails on correct files is a check people
 # learn to skip.
-IDS='\b([ABCDEIQ][0-9]{1,2}|G([7-9]|[1-9][0-9])|D[0-9](\.[0-9]+)?|[EWRT][0-9]{1,2}|SEC[0-9]|LIC[0-9])\b'
+# Not preceded by a hyphen: shell is full of -A1, -B2, -C3 as grep flags,
+# and a word boundary alone treats the hyphen as one. Third pattern
+# correction of this kind, and like the others it narrows the pattern
+# rather than excluding a file - a check that reports correct files as
+# leaks is a check people learn to skip.
+IDS='(^|[^-[:alnum:]])([ABCDEIQ][0-9]{1,2}|G([7-9]|[1-9][0-9])|D[0-9](\.[0-9]+)?|[EWRT][0-9]{1,2}|SEC[0-9]|LIC[0-9])\b'
 LANES='(Track [ABCD]\b|ENGG-[12]|engineer #[12]|work order|celar-progress-tracker)'
 
 # Text mode: the same two patterns, applied to a message instead of a tree.
@@ -57,8 +62,13 @@ exclude=(--exclude-dir=.git --exclude-dir=out --exclude-dir=lib
          --exclude-dir=cache --exclude-dir=node_modules --exclude-dir=target
          --exclude-dir=scripts)
 
+# .sh was missing until 2026-09-04 and a devnet script had carried an
+# internal identifier in a comment since it was written. Shell is where
+# setup reasoning lives, and setup reasoning is exactly where someone
+# explains WHY - which is where our own vocabulary turns up.
 types=(--include='*.go' --include='*.sol' --include='*.rs'
-       --include='*.py' --include='*.md' --include='*.yml' --include='*.toml')
+       --include='*.py' --include='*.md' --include='*.yml' --include='*.toml'
+       --include='*.sh' --include='*.json' --include='Makefile')
 
 echo "== internal work-item ids =="
 if grep -rnE "$IDS" "${types[@]}" "${exclude[@]}" . ; then fail=1; fi

@@ -17,10 +17,10 @@ for i in $(seq 0 $((N-1))); do
   sed -i 's/type = "flood"/type = "app"/' "$ROOT/node$i/config/config.toml"           # EVM mempool needs type=app
   # CometBFT 0.39 ships an experimental go-libp2p transport (QUIC, WebTransport,
   # WebRTC + STUN NAT traversal), linked into the binary and off by default. Pin it
-  # off explicitly: a default that happens to be right is not a setting we chose,
-  # and this is the D1.4 shape — there, disabling the ICS20 precompile did not
-  # disable the IBC transfer module, and only pinning both at generation time made
-  # every devnet inherit the intent.
+  # off explicitly: a default that happens to be right is not a setting we chose.
+  # Same shape as the transfer path earlier — disabling the ICS20 precompile did
+  # not disable the IBC transfer module behind it, and only pinning both at
+  # generation time made every devnet inherit the intent.
   sed -i -E '/^\[p2p\.libp2p\]/,/^\[/ s/^([[:space:]]*enabled[[:space:]]*=).*/\1 false/' \
     "$ROOT/node$i/config/config.toml"
   APP="$ROOT/node$i/config/app.toml"
