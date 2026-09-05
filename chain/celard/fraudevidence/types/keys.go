@@ -83,3 +83,9 @@ var ErrConflictingVerdict = fmt.Errorf("a different verdict is already recorded 
 // ErrNoSuchVerdict is returned when punishment is claimed for a conviction
 // that was never recorded.
 var ErrNoSuchVerdict = fmt.Errorf("no verdict recorded for this seat and epoch")
+
+// ErrConflictingAttestation is returned when a second attestation names the
+// same stream position with a different result. Not overwritten: a
+// re-execution dispute is settled against what was attested, and replacing
+// the record would change what a challenge compares against.
+var ErrConflictingAttestation = fmt.Errorf("a different attestation is already recorded for this stream position")

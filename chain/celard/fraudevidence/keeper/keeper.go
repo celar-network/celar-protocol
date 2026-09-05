@@ -1,6 +1,8 @@
 package keeper
 
 import (
+	"bytes"
+
 	"github.com/cosmos/evm/evmd/fraudevidence/types"
 
 	storetypes "github.com/cosmos/cosmos-sdk/store/v2/types"
@@ -107,4 +109,55 @@ func (k Keeper) MarkPunished(ctx sdk.Context, epoch uint64, seatRole uint32) err
 	}
 	ctx.KVStore(k.storeKey).Set(key, bz)
 	return nil
+}
+
+
+// RecordAttestation stores a coprocessor's attestation for one stream
+// position, and reports whether one was already there.
+//
+// Same shape as recording a verdict, and for a related reason: a re-execution
+// dispute is settled against what was attested, so silently replacing an
+// attestation would change what a later challenge is comparing to. Identical
+// resubmission is a no-op; a different attestation for the same position is a
+// distinct claim and is refused here rather than overwritten.
+//
+// Two coprocessors disagreeing about one position is not an error in this
+// module - it is the fraud game's entire subject. Refusing the write keeps
+// the first claim intact and leaves the disagreement to the path that can
+// adjudicate it.
+func (k Keeper) RecordAttestation(ctx sdk.Context, a types.Attestation) (existed bool, err error) {
+	key := types.AttestationKey(a.Height, a.TxIndex, a.LogIndex)
+	store := ctx.KVStore(k.storeKey)
+
+	if bz := store.Get(key); bz != nil {
+		var prior types.Attestation
+		if err := prior.Unmarshal(bz); err != nil {
+			return true, err
+		}
+		if !bytes.Equal(prior.CtDigest, a.CtDigest) ||
+			!bytes.Equal(prior.ResultHandle, a.ResultHandle) {
+			return true, types.ErrConflictingAttestation
+		}
+		return true, nil
+	}
+
+	bz, err := a.Marshal()
+	if err != nil {
+		return false, err
+	}
+	store.Set(key, bz)
+	return false, nil
+}
+
+// Attestation reports the attestation recorded for a stream position.
+func (k Keeper) Attestation(ctx sdk.Context, height uint64, txIndex, logIndex uint32) (types.Attestation, bool, error) {
+	bz := ctx.KVStore(k.storeKey).Get(types.AttestationKey(height, txIndex, logIndex))
+	if bz == nil {
+		return types.Attestation{}, false, nil
+	}
+	var a types.Attestation
+	if err := a.Unmarshal(bz); err != nil {
+		return types.Attestation{}, true, err
+	}
+	return a, true, nil
 }

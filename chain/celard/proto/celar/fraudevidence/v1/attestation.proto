@@ -1,0 +1,49 @@
+syntax = "proto3";
+package celar.fraudevidence.v1;
+
+option go_package = "github.com/cosmos/evm/evmd/fraudevidence/types";
+
+// Attestation is a coprocessor's signed claim about one executed operation:
+// where it executed from, the handle the chain assigned, and a digest of the
+// ciphertext it produced.
+//
+// Kept in chain state because the result body goes to the availability layer
+// and the attestation is what the chain keeps. A sampled re-execution is
+// compared against this record, so it has to outlive the block that carried
+// it.
+//
+// Field numbers are canonical from the first byte written, for the reason the
+// commitment archive fixed its own.
+message Attestation {
+  // Stream position: height, transaction index, log index.
+  //
+  // Stored as three fields rather than as the packed key. The packing belongs
+  // to key derivation; duplicating it inside the record would give one triple
+  // two representations in a single module, which is the drift that pinning
+  // the encoding exists to prevent.
+  uint64 height = 1;
+  uint32 tx_index = 2;
+  uint32 log_index = 3;
+
+  // The chain-assigned result handle the operation produced.
+  bytes result_handle = 4;
+
+  // Digest of the produced ciphertext, over the narrowed basis.
+  //
+  // Not the admitted-ciphertext commitment: that is a different digest over a
+  // different representation, and confusing the two yields 32 plausible bytes
+  // that never match.
+  bytes ct_digest = 5;
+
+  // Commitment-scheme version.
+  //
+  // Carried although only one scheme exists, because it is what lets a future
+  // validity proof arrive as a later version with the handle-to-digest
+  // binding unchanged. Adding it after attestations exist would be exactly
+  // the state migration it avoids.
+  uint32 env_version = 6;
+
+  // Who attested, and their signature over the pinned preimage.
+  bytes coprocessor_id = 7;
+  bytes signature = 8;
+}
