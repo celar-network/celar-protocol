@@ -1,0 +1,455 @@
+//! B7.1 — flooding-mask supply at the key's sharing degree (local-sample-and-sum).
+//!
+//! Threshold decryption floods the opened value with a mask `E = Σ e_i` so the
+//! revealed phase leaks nothing about the secret key beyond the plaintext. When
+//! a key's sharing degree is decoupled from the committee's corruption
+//! threshold (a degree-78 key on a 100-seat committee), the mask must be
+//! **born at the key's degree**, or a low-degree coalition reconstructs the
+//! mask polynomial in advance and subtracts it — restoring the exact leakage
+//! flooding exists to prevent (the "strip attack", `tasks/degree-decoupling/01`).
+//!
+//! **Why local-sample-and-sum, and why it is not a choice.** Composing a mask
+//! inside MPC (shared preprocessing) needs multiplication, which doubles the
+//! sharing degree — a degree-78 mask would need `n > 3·78 = 234`, impossible at
+//! c=100. The deployed low-degree decrypt path gets away with shared
+//! preprocessing because it floods at the small compute degree; at the
+//! decoupled degree it hits the same wall. So the only viable construction is
+//! contribution-sum: each of a quorum of seats **locally samples** a bounded
+//! term and **shares it at the key degree** (pure distribution, needs only
+//! `n > degree`, no opening, no multiplication). The mask is the sum. Secrecy
+//! against a degree-coalition needs one honest contributor, i.e. `degree + 1`
+//! contributions. (W79/R24 confirmed this; SR8 signed it.)
+//!
+//! **The independence property is in the SHARING, not any ceremony ordering**
+//! (security's SR8 correction): contributions are degree-shared and never
+//! opened, so a coalition below the degree cannot learn or bias another seat's
+//! term — a would-be adaptive contributor would need `degree + 1` shares of
+//! others' terms, which is the collusion secrecy already excludes. A future
+//! change that opens contributions before the batch is used removes this
+//! property silently; do not add one.
+//!
+//! **Seams this module deliberately does NOT cross:**
+//! - **E55 / B4 (the range bound).** A contribution's term must lie in
+//!   `[2^LOG_FLOODING_MASK_LOWER_BOUND, 2^LOG_FLOODING_MASK_BOUND]`. The honest
+//!   sampler here draws in-range by construction; making a *malicious*
+//!   out-of-range term a proof failure is the `π_i^pd` relation's job (B4),
+//!   which does not exist yet. Shares do not reveal their value, so the builder
+//!   validates structure (degree, party count, distinct dealer, commitment),
+//!   not the term's magnitude.
+//! - **B7.4 (consumption).** This module produces the summed mask *sharing*;
+//!   folding it into the noiseflood decrypt path is B7.4. The seam is
+//!   [`SealedMaskBatch::mask_shares`].
+//! - **The canary (E57 option 2).** Cut-and-choose auditing of contributions is
+//!   designed in `tasks/degree-decoupling/04` and deferred pending its
+//!   detection-power review; it is not implemented here.
+//!
+//! **The sealing invariant (E57 obligation), enforced by type-state.** The mask
+//! batch must be sealed — all contributions dealt and committed — before
+//! anything consumes it. [`SealedMaskBatch`]'s only constructor is
+//! [`MaskBatchBuilder::seal`], which takes the builder **by value**; an unsealed
+//! builder cannot reach the consume path, and the ordering bug does not
+//! typecheck (see the `compile_fail` doctest on [`SealedMaskBatch`]).
+
+use std::collections::HashSet;
+
+use aes_prng::AesRng;
+use anyhow::{bail, Result};
+use rand::{CryptoRng, Rng};
+use sha2::{Digest, Sha256};
+
+use algebra::base_ring::Z128;
+use algebra::galois_rings::common::ResiduePoly;
+use algebra::sharing::shamir::{InputOp, ShamirSharings};
+use algebra::sharing::share::Share;
+use algebra::structure_traits::FromU128;
+use threshold_types::role::Role;
+
+use crate::budget::{LOG_FLOODING_MASK_BOUND, LOG_FLOODING_MASK_LOWER_BOUND};
+use crate::EXTENSION_DEGREE;
+
+/// The ring flooding terms are shared over (same as the threshold decrypt path).
+type MaskRing = ResiduePoly<Z128, EXTENSION_DEGREE>;
+
+/// log₂ floor on a single contribution's flooding term — the E55 lower bound,
+/// mirrored from `budget.rs` so a change there forces a change here.
+pub const CONTRIB_LOG_MIN: u32 = LOG_FLOODING_MASK_LOWER_BOUND;
+/// log₂ ceiling on a single contribution's flooding term — the E55 upper bound.
+pub const CONTRIB_LOG_MAX: u32 = LOG_FLOODING_MASK_BOUND;
+
+/// Draw a flooding-term magnitude in the E55 range `[2^CONTRIB_LOG_MIN,
+/// 2^CONTRIB_LOG_MAX)`. Real TUniform sampling lands in this range for all but
+/// a `2^-λ_stat` fraction of draws (the honest false-reject the range bound is
+/// derived against); conditioning on the range here keeps the honest path
+/// deterministic without changing what a correct sampler produces w.h.p.
+fn sample_bounded_magnitude<R: Rng + CryptoRng>(rng: &mut R) -> u128 {
+    let min = 1u128 << CONTRIB_LOG_MIN;
+    let max = 1u128 << CONTRIB_LOG_MAX;
+    rng.gen_range(min..max)
+}
+
+/// A magnitude and a random sign, as a centered ring scalar (negatives are the
+/// two's-complement image mod 2^128, matching the decrypt path's convention).
+fn term_from_magnitude(mag: u128, negative: bool) -> MaskRing {
+    let raw = if negative { mag.wrapping_neg() } else { mag };
+    MaskRing::from_u128(raw)
+}
+
+/// One seat's contribution: a bounded flooding term, shared at the key degree,
+/// plus a commitment binding the sharing.
+///
+/// In deployment the dealer sends share `j` to party `j` and broadcasts the
+/// commitment; this batch model holds the whole sharing (as the DKG simulator
+/// does), and the transcript keeps only the hash, never the shares.
+#[derive(Debug, Clone)]
+pub struct MaskContribution {
+    dealer: Role,
+    sharing: ShamirSharings<MaskRing>,
+    commitment: [u8; 32],
+    parties: usize,
+    degree: usize,
+}
+
+impl MaskContribution {
+    /// Honest contribution: sample a term in the E55 range and deal it at
+    /// `degree` among `parties`. `dealer` is the contributing seat.
+    pub fn sample_and_deal<R: Rng + CryptoRng>(
+        rng: &mut R,
+        dealer: Role,
+        parties: usize,
+        degree: usize,
+    ) -> Result<Self> {
+        if degree >= parties {
+            bail!("degree {degree} must be strictly less than parties {parties}");
+        }
+        let mag = sample_bounded_magnitude(rng);
+        let term = term_from_magnitude(mag, rng.gen::<bool>());
+        let sharing = ShamirSharings::share(rng, term, parties, degree)?;
+        let commitment = commit_sharing(dealer, &sharing);
+        Ok(Self {
+            dealer,
+            sharing,
+            commitment,
+            parties,
+            degree,
+        })
+    }
+
+    pub fn dealer(&self) -> Role {
+        self.dealer
+    }
+    pub fn commitment(&self) -> [u8; 32] {
+        self.commitment
+    }
+}
+
+/// Commit to a contribution's sharing: `SHA256(dealer ‖ bincode(shares))`.
+/// The transcript stores this hash, never the shares (see the crate header).
+fn commit_sharing(dealer: Role, sharing: &ShamirSharings<MaskRing>) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"celar.b7.mask-contribution.v1");
+    hasher.update(dealer.one_based().to_be_bytes());
+    let bytes = bincode::serialize(&sharing.shares).unwrap_or_default();
+    hasher.update(bytes);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&hasher.finalize());
+    out
+}
+
+/// Open, accumulating batch. Cannot be consumed as a mask — the consume path
+/// takes [`SealedMaskBatch`], which this is not, and there is no conversion
+/// except [`Self::seal`].
+#[derive(Debug)]
+pub struct MaskBatchBuilder {
+    parties: usize,
+    degree: usize,
+    /// Distinct contributions required to seal: `degree + 1` (one honest
+    /// contributor must lie outside any degree-coalition).
+    required: usize,
+    contributions: Vec<MaskContribution>,
+    dealers: HashSet<Role>,
+}
+
+impl MaskBatchBuilder {
+    /// A fresh builder for a `parties`-seat committee sharing at `degree`.
+    pub fn new(parties: usize, degree: usize) -> Self {
+        Self {
+            parties,
+            degree,
+            required: degree + 1,
+            contributions: Vec::new(),
+            dealers: HashSet::new(),
+        }
+    }
+
+    /// The distinct-contribution quorum needed to seal.
+    pub fn required(&self) -> usize {
+        self.required
+    }
+
+    /// Number of distinct contributions collected so far.
+    pub fn collected(&self) -> usize {
+        self.dealers.len()
+    }
+
+    /// Admit one contribution. Validates STRUCTURE — matching committee shape,
+    /// a distinct dealer, and that the stored commitment binds the sharing. The
+    /// term's *magnitude* is not (and cannot be) checked here from shares; that
+    /// is the honest sampler's guarantee and B4's proof (see the module header).
+    pub fn add(&mut self, c: MaskContribution) -> Result<()> {
+        if c.parties != self.parties || c.degree != self.degree {
+            bail!(
+                "contribution shape (parties={}, degree={}) does not match batch (parties={}, degree={})",
+                c.parties,
+                c.degree,
+                self.parties,
+                self.degree
+            );
+        }
+        if c.sharing.shares.len() != self.parties {
+            bail!(
+                "contribution carries {} shares, expected {} (one per party)",
+                c.sharing.shares.len(),
+                self.parties
+            );
+        }
+        if commit_sharing(c.dealer, &c.sharing) != c.commitment {
+            bail!("contribution commitment does not bind its sharing");
+        }
+        if !self.dealers.insert(c.dealer) {
+            bail!("duplicate contribution from dealer {}", c.dealer);
+        }
+        self.contributions.push(c);
+        Ok(())
+    }
+
+    /// Seal the batch — **the only way to make a [`SealedMaskBatch`]**. Requires
+    /// the full distinct-contribution quorum, sums the contributions into the
+    /// mask sharing, and binds the batch commitment. Takes `self` by value, so a
+    /// builder cannot be reused after sealing and an unsealed batch cannot be
+    /// consumed.
+    pub fn seal(self) -> Result<SealedMaskBatch> {
+        if self.dealers.len() < self.required {
+            bail!(
+                "cannot seal: {} distinct contributions, need {} (degree {} + 1)",
+                self.dealers.len(),
+                self.required,
+                self.degree
+            );
+        }
+
+        // The mask sharing is the share-wise sum of the contributions: party j's
+        // mask share is Σ_i (its share of contribution i). Degree is preserved
+        // by addition (no multiplication), so the mask is a degree-`degree`
+        // sharing of Σ terms.
+        let mut iter = self.contributions.iter();
+        let first = iter
+            .next()
+            .expect("quorum >= degree + 1 >= 1, so at least one contribution");
+        let mut mask_sharing = first.sharing.clone();
+        for c in iter {
+            mask_sharing = &mask_sharing + &c.sharing;
+        }
+
+        // Batch commitment binds every contribution commitment, in dealer order
+        // so it is independent of arrival order.
+        let mut commitments: Vec<[u8; 32]> =
+            self.contributions.iter().map(|c| c.commitment).collect();
+        commitments.sort_unstable();
+        let mut hasher = Sha256::new();
+        hasher.update(b"celar.b7.mask-batch.v1");
+        for c in &commitments {
+            hasher.update(c);
+        }
+        let mut batch_commitment = [0u8; 32];
+        batch_commitment.copy_from_slice(&hasher.finalize());
+
+        Ok(SealedMaskBatch {
+            mask_sharing,
+            batch_commitment,
+            parties: self.parties,
+            degree: self.degree,
+            contributors: self.dealers.len(),
+        })
+    }
+}
+
+/// A sealed, immutable mask batch — the flooding mask, ready to consume.
+///
+/// The only constructor is [`MaskBatchBuilder::seal`]; the consume path takes
+/// `&SealedMaskBatch`, so an unsealed builder cannot be fed to it. That is the
+/// E57 sealing invariant, enforced by the type system rather than a runtime
+/// check that could be forgotten:
+///
+/// ```compile_fail
+/// use celar_kms::mask_supply::{MaskBatchBuilder, SealedMaskBatch};
+/// fn consume(_: &SealedMaskBatch) {}
+/// let builder = MaskBatchBuilder::new(5, 2);
+/// // A builder is not a sealed batch — this must not compile.
+/// consume(&builder);
+/// ```
+#[derive(Debug, Clone)]
+pub struct SealedMaskBatch {
+    mask_sharing: ShamirSharings<MaskRing>,
+    batch_commitment: [u8; 32],
+    parties: usize,
+    degree: usize,
+    contributors: usize,
+}
+
+impl SealedMaskBatch {
+    /// The mask shares B7.4's decrypt path consumes — party `j`'s share of the
+    /// summed flooding mask, a degree-`degree` sharing.
+    pub fn mask_shares(&self) -> &[Share<MaskRing>] {
+        &self.mask_sharing.shares
+    }
+
+    /// The batch commitment, bound into the reshare transcript and reused as the
+    /// canary beacon's pre-image (B7.1 detail design §5).
+    pub fn batch_commitment(&self) -> [u8; 32] {
+        self.batch_commitment
+    }
+
+    pub fn degree(&self) -> usize {
+        self.degree
+    }
+    pub fn parties(&self) -> usize {
+        self.parties
+    }
+    pub fn contributors(&self) -> usize {
+        self.contributors
+    }
+}
+
+/// Convenience for the honest all-seats path and for tests: build a sealed batch
+/// from `contributors` seats each sampling and dealing one contribution.
+pub fn build_honest_batch(
+    parties: usize,
+    degree: usize,
+    contributors: usize,
+) -> Result<SealedMaskBatch> {
+    let mut rng = AesRng::from_random_seed();
+    let mut builder = MaskBatchBuilder::new(parties, degree);
+    for seat in 1..=contributors {
+        let c = MaskContribution::sample_and_deal(
+            &mut rng,
+            Role::indexed_from_one(seat),
+            parties,
+            degree,
+        )?;
+        builder.add(c)?;
+    }
+    builder.seal()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use algebra::sharing::shamir::RevealOp;
+    use rand::SeedableRng;
+
+    const PARTIES: usize = 8;
+    const DEGREE: usize = 3; // quorum = 4
+
+    #[test]
+    fn range_constants_mirror_budget() {
+        // The E55 floor is the evaluated-noise bound; the ceiling is the mask
+        // sampling bound. If budget.rs moves these, this test forces the mask
+        // supply to be re-derived rather than silently drifting.
+        assert_eq!(CONTRIB_LOG_MIN, crate::budget::LOG_B_EVAL);
+        assert_eq!(CONTRIB_LOG_MAX, crate::budget::LOG_FLOODING_MASK_BOUND);
+        assert!(CONTRIB_LOG_MIN < CONTRIB_LOG_MAX);
+    }
+
+    #[test]
+    fn sampled_magnitude_is_in_the_e55_range() {
+        let mut rng = AesRng::seed_from_u64(1);
+        for _ in 0..1000 {
+            let m = sample_bounded_magnitude(&mut rng);
+            assert!(m >= (1u128 << CONTRIB_LOG_MIN));
+            assert!(m < (1u128 << CONTRIB_LOG_MAX));
+        }
+    }
+
+    #[test]
+    fn mask_batch_seal_requires_full_quorum() {
+        let mut rng = AesRng::seed_from_u64(2);
+        let mut builder = MaskBatchBuilder::new(PARTIES, DEGREE);
+        // One short of the quorum (degree + 1 = 4): sealing must refuse.
+        for seat in 1..=DEGREE {
+            let c = MaskContribution::sample_and_deal(
+                &mut rng,
+                Role::indexed_from_one(seat),
+                PARTIES,
+                DEGREE,
+            )
+            .unwrap();
+            builder.add(c).unwrap();
+        }
+        assert_eq!(builder.collected(), DEGREE);
+        let err = builder.seal().unwrap_err().to_string();
+        assert!(err.contains("cannot seal"), "{err}");
+    }
+
+    #[test]
+    fn add_rejects_a_duplicate_dealer() {
+        let mut rng = AesRng::seed_from_u64(3);
+        let mut builder = MaskBatchBuilder::new(PARTIES, DEGREE);
+        let dealer = Role::indexed_from_one(1);
+        let a = MaskContribution::sample_and_deal(&mut rng, dealer, PARTIES, DEGREE).unwrap();
+        let b = MaskContribution::sample_and_deal(&mut rng, dealer, PARTIES, DEGREE).unwrap();
+        builder.add(a).unwrap();
+        let err = builder.add(b).unwrap_err().to_string();
+        assert!(err.contains("duplicate contribution"), "{err}");
+    }
+
+    #[test]
+    fn sealed_mask_reconstructs_to_the_sum_of_the_contributions() {
+        // With a full quorum and no faults, the mask sharing reconstructs at
+        // `degree`, and it is the sum of the (never-opened) contribution terms —
+        // the property the strip attack targets and the sum defends.
+        let mut rng = AesRng::seed_from_u64(4);
+        let mut builder = MaskBatchBuilder::new(PARTIES, DEGREE);
+        let mut expected = MaskRing::from_u128(0);
+        for seat in 1..=(DEGREE + 1) {
+            // Rebuild each contribution deterministically so we know its term.
+            let mag = sample_bounded_magnitude(&mut rng);
+            let negative = rng.gen::<bool>();
+            let term = term_from_magnitude(mag, negative);
+            expected = expected + term;
+            let sharing =
+                ShamirSharings::share(&mut rng, term, PARTIES, DEGREE).unwrap();
+            let commitment = commit_sharing(Role::indexed_from_one(seat), &sharing);
+            builder
+                .add(MaskContribution {
+                    dealer: Role::indexed_from_one(seat),
+                    sharing,
+                    commitment,
+                    parties: PARTIES,
+                    degree: DEGREE,
+                })
+                .unwrap();
+        }
+        let sealed = builder.seal().unwrap();
+        assert_eq!(sealed.contributors(), DEGREE + 1);
+        let recon = ShamirSharings {
+            shares: sealed.mask_shares().to_vec(),
+        }
+        .reconstruct(DEGREE)
+        .unwrap();
+        assert_eq!(recon, expected);
+    }
+
+    #[test]
+    fn honest_batch_builds_and_reconstructs_at_degree() {
+        let sealed = build_honest_batch(PARTIES, DEGREE, DEGREE + 1).unwrap();
+        assert_eq!(sealed.parties(), PARTIES);
+        assert_eq!(sealed.degree(), DEGREE);
+        // Reconstructs (no faults) — confirms the summed sharing is well-formed
+        // at the declared degree.
+        ShamirSharings {
+            shares: sealed.mask_shares().to_vec(),
+        }
+        .reconstruct(DEGREE)
+        .unwrap();
+    }
+}
