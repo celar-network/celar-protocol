@@ -2,6 +2,7 @@ package precisebank
 
 import (
 	"context"
+	"fmt"
 	"encoding/json"
 
 	"github.com/grpc-ecosystem/grpc-gateway/runtime"
@@ -31,6 +32,7 @@ var (
 	_ module.HasABCIGenesis = AppModule{}
 
 	_ appmodule.AppModule   = AppModule{}
+	_ appmodule.HasEndBlocker = AppModule{}
 	_ module.HasABCIGenesis = AppModule{}
 )
 
@@ -151,6 +153,42 @@ func (am AppModule) InitGenesis(ctx sdk.Context, cdc codec.JSONCodec, gs json.Ra
 func (am AppModule) ExportGenesis(ctx sdk.Context, cdc codec.JSONCodec) json.RawMessage {
 	gs := ExportGenesis(ctx, am.keeper)
 	return cdc.MustMarshalJSON(gs)
+}
+
+// EndBlock asserts the supply invariants and halts the chain if they fail.
+//
+// Per block rather than on demand, and deliberately not through the standard
+// invariant registry: that registry is not wired here, and its check period is
+// an operator setting - a guarantee an operator can turn off is a weaker thing
+// than the row asking for this described.
+//
+// Halting is the intended outcome. A broken supply invariant means the ledger
+// is unsound, and continuing to produce blocks on unsound state prints money
+// quietly. Stopping is loud and recoverable; continuing is neither.
+//
+// COST, stated rather than discovered: the reserve equation iterates every
+// fractional balance, so this is O(accounts) per block. That is unremarkable
+// at devnet size and a real expense at scale. It is run every block anyway
+// because the alternative - checking sometimes - makes the guarantee depend on
+// a schedule, and a supply breach that survives even one block is already
+// spendable. If this needs to change, measure first and record the number in
+// the task row rather than reaching for a period parameter.
+//
+// The denomination check is O(1) and is the one that catches the failure this
+// module has actually had.
+func (am AppModule) EndBlock(goCtx context.Context) error {
+	ctx := sdk.UnwrapSDKContext(goCtx)
+
+	if err := am.keeper.CheckNoExtendedDenomInBank(ctx); err != nil {
+		panic(fmt.Sprintf("precisebank: %v", err))
+	}
+	if err := am.keeper.CheckSupplyInvariant(ctx); err != nil {
+		panic(fmt.Sprintf("precisebank: %v", err))
+	}
+	if err := am.keeper.CheckFractionalBalanceBounds(ctx); err != nil {
+		panic(fmt.Sprintf("precisebank: %v", err))
+	}
+	return nil
 }
 
 // IsAppModule implements the appmodule.AppModule interface.

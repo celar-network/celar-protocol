@@ -694,6 +694,12 @@ func NewExampleApp(
 		genutiltypes.ModuleName, evidencetypes.ModuleName, authz.ModuleName,
 		feegrant.ModuleName, upgradetypes.ModuleName, consensusparamtypes.ModuleName,
 		vestingtypes.ModuleName,
+		// Last, and it has to be: precisebank asserts the supply invariants
+		// over final state, so every module that can move a balance must have
+		// run before it. Placed earlier it would check a ledger mid-block and
+		// halt the chain on a discrepancy that a later module was about to
+		// resolve.
+		precisebanktypes.ModuleName,
 	)
 
 	// NOTE: The genutils module must occur after staking so that pools are
