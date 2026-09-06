@@ -1,4 +1,4 @@
-//! B7.1 — flooding-mask supply at the key's sharing degree (local-sample-and-sum).
+//! Flooding-mask supply at the key's sharing degree (local-sample-and-sum).
 //!
 //! Threshold decryption floods the opened value with a mask `E = Σ e_i` so the
 //! revealed phase leaks nothing about the secret key beyond the plaintext. When
@@ -6,7 +6,7 @@
 //! threshold (a degree-78 key on a 100-seat committee), the mask must be
 //! **born at the key's degree**, or a low-degree coalition reconstructs the
 //! mask polynomial in advance and subtracts it — restoring the exact leakage
-//! flooding exists to prevent (the "strip attack", `tasks/degree-decoupling/01`).
+//! flooding exists to prevent (the "strip attack").
 //!
 //! **Why local-sample-and-sum, and why it is not a choice.** Composing a mask
 //! inside MPC (shared preprocessing) needs multiplication, which doubles the
@@ -18,37 +18,37 @@
 //! term and **shares it at the key degree** (pure distribution, needs only
 //! `n > degree`, no opening, no multiplication). The mask is the sum. Secrecy
 //! against a degree-coalition needs one honest contributor, i.e. `degree + 1`
-//! contributions. (W79/R24 confirmed this; SR8 signed it.)
+//! contributions.
 //!
-//! **The independence property is in the SHARING, not any ceremony ordering**
-//! (security's SR8 correction): contributions are degree-shared and never
-//! opened, so a coalition below the degree cannot learn or bias another seat's
-//! term — a would-be adaptive contributor would need `degree + 1` shares of
-//! others' terms, which is the collusion secrecy already excludes. A future
-//! change that opens contributions before the batch is used removes this
-//! property silently; do not add one.
+//! **The independence property is in the SHARING, not any ceremony ordering:**
+//! contributions are degree-shared and never opened, so a coalition below the
+//! degree cannot learn or bias another seat's term — a would-be adaptive
+//! contributor would need `degree + 1` shares of others' terms, which is the
+//! collusion secrecy already excludes. A future change that opens contributions
+//! before the batch is used removes this property silently; do not add one.
 //!
 //! **Seams this module deliberately does NOT cross:**
-//! - **E55 / B4 (the range bound).** A contribution's term must lie in
+//! - **The range bound.** A contribution's term must lie in
 //!   `[2^LOG_FLOODING_MASK_LOWER_BOUND, 2^LOG_FLOODING_MASK_BOUND]`. The honest
 //!   sampler here draws in-range by construction; making a *malicious*
-//!   out-of-range term a proof failure is the `π_i^pd` relation's job (B4),
-//!   which does not exist yet. Shares do not reveal their value, so the builder
-//!   validates structure (degree, party count, distinct dealer, commitment),
-//!   not the term's magnitude.
-//! - **B7.4 (consumption).** This module produces the summed mask *sharing*;
-//!   folding it into the noiseflood decrypt path is B7.4. The seam is
-//!   [`SealedMaskBatch::mask_shares`].
-//! - **The canary (E57 option 2).** Cut-and-choose auditing of contributions is
-//!   designed in `tasks/degree-decoupling/04` and deferred pending its
-//!   detection-power review; it is not implemented here.
+//!   out-of-range term a proof failure is the partial-decryption proof
+//!   relation's job, which does not exist yet. Shares do not reveal their value,
+//!   so the builder validates structure (degree, party count, distinct dealer,
+//!   commitment), not the term's magnitude.
+//! - **Consumption.** This module produces the summed mask *sharing*; folding it
+//!   into the noiseflood decrypt path is the degree-aware decrypt path's job.
+//!   The seam is [`SealedMaskBatch::mask_shares`].
+//! - **The audit.** Cut-and-choose auditing of contributions (a canary that
+//!   opens a beacon-selected subset and distribution-tests it) is designed
+//!   separately and deferred pending its detection-power review; it is not
+//!   implemented here.
 //!
-//! **The sealing invariant (E57 obligation), enforced by type-state.** The mask
-//! batch must be sealed — all contributions dealt and committed — before
-//! anything consumes it. [`SealedMaskBatch`]'s only constructor is
-//! [`MaskBatchBuilder::seal`], which takes the builder **by value**; an unsealed
-//! builder cannot reach the consume path, and the ordering bug does not
-//! typecheck (see the `compile_fail` doctest on [`SealedMaskBatch`]).
+//! **The sealing invariant, enforced by type-state.** The mask batch must be
+//! sealed — all contributions dealt and committed — before anything consumes it.
+//! [`SealedMaskBatch`]'s only constructor is [`MaskBatchBuilder::seal`], which
+//! takes the builder **by value**; an unsealed builder cannot reach the consume
+//! path, and the ordering bug does not typecheck (see the `compile_fail` doctest
+//! on [`SealedMaskBatch`]).
 
 use std::collections::HashSet;
 
@@ -70,13 +70,15 @@ use crate::EXTENSION_DEGREE;
 /// The ring flooding terms are shared over (same as the threshold decrypt path).
 type MaskRing = ResiduePoly<Z128, EXTENSION_DEGREE>;
 
-/// log₂ floor on a single contribution's flooding term — the E55 lower bound,
-/// mirrored from `budget.rs` so a change there forces a change here.
+/// log₂ floor on a single contribution's flooding term — the lower bound of the
+/// two-sided flooding range, mirrored from `budget.rs` so a change there forces
+/// a change here.
 pub const CONTRIB_LOG_MIN: u32 = LOG_FLOODING_MASK_LOWER_BOUND;
-/// log₂ ceiling on a single contribution's flooding term — the E55 upper bound.
+/// log₂ ceiling on a single contribution's flooding term — the upper bound of
+/// the two-sided flooding range.
 pub const CONTRIB_LOG_MAX: u32 = LOG_FLOODING_MASK_BOUND;
 
-/// Draw a flooding-term magnitude in the E55 range `[2^CONTRIB_LOG_MIN,
+/// Draw a flooding-term magnitude in the flooding range `[2^CONTRIB_LOG_MIN,
 /// 2^CONTRIB_LOG_MAX)`. Real TUniform sampling lands in this range for all but
 /// a `2^-λ_stat` fraction of draws (the honest false-reject the range bound is
 /// derived against); conditioning on the range here keeps the honest path
@@ -110,7 +112,7 @@ pub struct MaskContribution {
 }
 
 impl MaskContribution {
-    /// Honest contribution: sample a term in the E55 range and deal it at
+    /// Honest contribution: sample a term in the flooding range and deal it at
     /// `degree` among `parties`. `dealer` is the contributing seat.
     pub fn sample_and_deal<R: Rng + CryptoRng>(
         rng: &mut R,
@@ -194,7 +196,8 @@ impl MaskBatchBuilder {
     /// Admit one contribution. Validates STRUCTURE — matching committee shape,
     /// a distinct dealer, and that the stored commitment binds the sharing. The
     /// term's *magnitude* is not (and cannot be) checked here from shares; that
-    /// is the honest sampler's guarantee and B4's proof (see the module header).
+    /// is the honest sampler's guarantee and the decryption relation's proof
+    /// (see the module header).
     pub fn add(&mut self, c: MaskContribution) -> Result<()> {
         if c.parties != self.parties || c.degree != self.degree {
             bail!(
@@ -277,7 +280,7 @@ impl MaskBatchBuilder {
 ///
 /// The only constructor is [`MaskBatchBuilder::seal`]; the consume path takes
 /// `&SealedMaskBatch`, so an unsealed builder cannot be fed to it. That is the
-/// E57 sealing invariant, enforced by the type system rather than a runtime
+/// sealing invariant, enforced by the type system rather than a runtime
 /// check that could be forgotten:
 ///
 /// ```compile_fail
@@ -297,14 +300,14 @@ pub struct SealedMaskBatch {
 }
 
 impl SealedMaskBatch {
-    /// The mask shares B7.4's decrypt path consumes — party `j`'s share of the
+    /// The mask shares the degree-aware decrypt path consumes — party `j`'s share of the
     /// summed flooding mask, a degree-`degree` sharing.
     pub fn mask_shares(&self) -> &[Share<MaskRing>] {
         &self.mask_sharing.shares
     }
 
     /// The batch commitment, bound into the reshare transcript and reused as the
-    /// canary beacon's pre-image (B7.1 detail design §5).
+    /// pre-image for the audit-selection beacon.
     pub fn batch_commitment(&self) -> [u8; 32] {
         self.batch_commitment
     }
@@ -352,7 +355,7 @@ mod tests {
 
     #[test]
     fn range_constants_mirror_budget() {
-        // The E55 floor is the evaluated-noise bound; the ceiling is the mask
+        // The lower bound is the evaluated-noise bound; the upper is the mask
         // sampling bound. If budget.rs moves these, this test forces the mask
         // supply to be re-derived rather than silently drifting.
         assert_eq!(CONTRIB_LOG_MIN, crate::budget::LOG_B_EVAL);
