@@ -25,6 +25,7 @@ pub mod dkg;
 pub mod fraud;
 pub mod header_trust;
 pub mod ics23_verify;
+pub mod mask_supply;
 pub mod mpt;
 pub mod node;
 pub mod noise_probe;

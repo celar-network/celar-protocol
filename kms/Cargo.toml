@@ -48,6 +48,10 @@ tonic = "=0.14.6"
 tokio-rustls = { version = "=0.26.4", default-features = false, features = ["aws_lc_rs"] }
 x509-parser = { version = "=0.18.1", features = ["verify-aws"] }
 aes-prng = "=0.2.1"
+# Same version threshold-algebra and aes-prng resolve (0.8.6), so AesRng
+# satisfies the `Rng + CryptoRng` bound on ShamirSharings::share — a different
+# rand major would be a second, incompatible trait set. Used by mask_supply.
+rand = "=0.8.6"
 
 anyhow = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

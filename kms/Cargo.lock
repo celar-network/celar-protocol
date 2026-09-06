@@ -768,6 +768,7 @@ dependencies = [
  "hex",
  "ics23",
  "prost 0.13.5",
+ "rand 0.8.6",
  "rlp",
  "serde",
  "serde_json",
