@@ -26,6 +26,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
+use rand::SeedableRng;
 use serde::{Deserialize, Serialize};
 
 use algebra::base_ring::{Z64, Z128};
@@ -33,6 +34,13 @@ use algebra::galois_rings::common::ResiduePoly;
 use threshold_execution::endpoints::reshare_sk::{
     ResharePreprocRequired, ReshareSecretKeys, SecureReshareSecretKeys,
 };
+use threshold_execution::runtime::sessions::base_session::{BaseSession, GenericBaseSession};
+use threshold_execution::tfhe_internals::parameters::DKGParams;
+use threshold_execution::tfhe_internals::test_feature::{
+    keygen_all_party_shares_from_client_key, ClientKeyView,
+};
+use threshold_execution::tests::helper::tests_and_benches::execute_protocol_two_sets;
+use threshold_types::role::{TwoSetsRole, TwoSetsThreshold};
 use threshold_execution::config::BatchParams;
 use threshold_execution::large_execution::offline::SecureLargePreprocessing;
 use threshold_execution::online::preprocessing::dummy::DummyPreprocessing;
@@ -475,4 +483,196 @@ pub async fn run_local_reshare(
     transcript.verify_against_keys(out_dir)?;
 
     Ok(ReshareOutput { transcript })
+}
+
+// ---------------------------------------------------------------------------
+// Upward key-reshare (two-sets): reshare a key held by an old committee at
+// degree t1 UP to a new committee at a higher degree t2. This is what lets a
+// key live at a degree decoupled from (higher than) the committee's corruption
+// threshold; the flooding masks are supplied separately at the same degree.
+//
+// Cut 1 (this): the protocol driver + a wiring round-trip test on dummy
+// preprocessing. The production layer (secure preprocessing, share-file I/O,
+// the epoch artifact at the new degree, the celar-dkg subcommand) and the
+// end-to-end key-preservation proof (decrypt with the reshared key) follow on
+// the same branch. Deep correctness of the two-sets protocol itself — that the
+// reshared shares reconstruct the same key — is proven by the upstream
+// `simulate_reshare_two_sets` test; this verifies OUR driver runs it and yields
+// well-formed set-2 shares.
+// ---------------------------------------------------------------------------
+
+/// Drive an upward two-sets reshare of `client_key` from `parties_s1` parties at
+/// degree `t1` to `parties_s2` parties at degree `t2` (`intersection` parties in
+/// both sets), on dummy preprocessing. Returns set-2's new key shares.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_upward_reshare(
+    client_key: &tfhe::ClientKey,
+    params: DKGParams,
+    parties_s1: usize,
+    t1: usize,
+    parties_s2: usize,
+    t2: usize,
+    intersection: usize,
+) -> Result<Vec<PrivateKeySet<EXTENSION_DEGREE>>> {
+    let oprf_present = ClientKeyView::new(client_key)
+        .raw_oprf_client_key()
+        .is_some();
+    let threshold = TwoSetsThreshold {
+        threshold_set_1: t1 as u8,
+        threshold_set_2: t2 as u8,
+    };
+
+    let mut task = |mut common: GenericBaseSession<TwoSetsRole>,
+                    session_s1: Option<BaseSession>,
+                    session_s2: Option<BaseSession>| {
+        // Each set-1 party re-derives the SAME full sharing from a fixed seed
+        // and picks its own share — the simulation shape (a real deployment
+        // loads its share from the previous epoch's files).
+        let client_key = client_key.clone();
+        async move {
+            let my_two_sets_role = common.my_role();
+
+            let mut my_share: Option<PrivateKeySet<EXTENSION_DEGREE>> =
+                if session_s1.is_some() {
+                    let mut rng = aes_prng::AesRng::seed_from_u64(4242);
+                    let shares = keygen_all_party_shares_from_client_key::<_, EXTENSION_DEGREE>(
+                        &client_key,
+                        params.classic_pbs(),
+                        &mut rng,
+                        parties_s1,
+                        t1,
+                    )
+                    .expect("sharing the key across set 1");
+                    Some(
+                        session_s1
+                            .as_ref()
+                            .unwrap()
+                            .my_role()
+                            .get_from(&shares)
+                            .expect("my set-1 share")
+                            .clone(),
+                    )
+                } else {
+                    None
+                };
+
+            // Set-2 preprocessing: dummy randoms sized by upstream's accounting.
+            let (mut preproc_64, mut preproc_128) = if let Some(s2) = session_s2.as_ref() {
+                let mut dp = DummyPreprocessing::new(42, s2);
+                let n_s1 = common.roles().iter().filter(|p| p.is_set1()).count();
+                let req = ResharePreprocRequired::new(n_s1, params, oprf_present);
+                let p64 = InMemoryBasePreprocessing {
+                    available_triples: Vec::new(),
+                    available_randoms: dp
+                        .next_random_vec(req.batch_params_64.randoms)
+                        .expect("Z64 randoms"),
+                };
+                let p128 = InMemoryBasePreprocessing {
+                    available_triples: Vec::new(),
+                    available_randoms: dp
+                        .next_random_vec(req.batch_params_128.randoms)
+                        .expect("Z128 randoms"),
+                };
+                (Some(p64), Some(p128))
+            } else {
+                (None, None)
+            };
+
+            let out: Option<PrivateKeySet<EXTENSION_DEGREE>> = match my_two_sets_role {
+                TwoSetsRole::OnlySet1(_) => {
+                    SecureReshareSecretKeys::reshare_sk_two_sets_as_s1(
+                        &mut common,
+                        my_share.as_mut().unwrap(),
+                        params,
+                        oprf_present,
+                    )
+                    .await
+                    .expect("reshare as set 1");
+                    None
+                }
+                TwoSetsRole::OnlySet2(_) => Some(
+                    SecureReshareSecretKeys::reshare_sk_two_sets_as_s2(
+                        &mut (common, session_s2.unwrap()),
+                        preproc_128.as_mut().unwrap(),
+                        preproc_64.as_mut().unwrap(),
+                        params,
+                        oprf_present,
+                    )
+                    .await
+                    .expect("reshare as set 2"),
+                ),
+                TwoSetsRole::Both(_) => Some(
+                    SecureReshareSecretKeys::reshare_sk_two_sets_as_both_sets(
+                        &mut (common, session_s2.unwrap()),
+                        preproc_128.as_mut().unwrap(),
+                        preproc_64.as_mut().unwrap(),
+                        my_share.as_mut().unwrap(),
+                        params,
+                        oprf_present,
+                    )
+                    .await
+                    .expect("reshare as both sets"),
+                ),
+            };
+
+            (my_two_sets_role, out)
+        }
+    };
+
+    let results = execute_protocol_two_sets::<_, _, ResiduePoly<Z128, EXTENSION_DEGREE>, EXTENSION_DEGREE>(
+        parties_s1,
+        parties_s2,
+        intersection,
+        threshold,
+        None,
+        NetworkMode::Sync,
+        &mut task,
+    )
+    .await;
+
+    // Set-2 parties (OnlySet2 and Both) return their new share; set-1-only
+    // parties return None.
+    Ok(results.into_iter().filter_map(|(_, o)| o).collect())
+}
+
+#[cfg(test)]
+mod upward_reshare_tests {
+    use super::*;
+    use rand::SeedableRng;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn upward_reshare_produces_well_formed_set2_shares() {
+        // Small test params; upward from (7 parties, degree 2) to (8 parties,
+        // degree 3) — degree INCREASES, the decoupling shape, and the exact
+        // config the fork's high-degree two-sets test proves preserves the key.
+        // Here we verify OUR driver runs the protocol and yields one well-formed
+        // share per set-2 party.
+        let params = dkg_params(ParamsChoice::Test);
+        let mut rng = aes_prng::AesRng::seed_from_u64(7);
+        let keyset = threshold_execution::tfhe_internals::test_feature::gen_uncompressed_key_set(
+            params,
+            tfhe::Tag::default(),
+            &mut rng,
+        );
+
+        let new_shares = run_upward_reshare(
+            &keyset.client_key,
+            params,
+            7, // parties_s1
+            2, // t1
+            8, // parties_s2
+            3, // t2
+            0, // intersection
+        )
+        .await
+        .expect("upward reshare");
+
+        assert_eq!(
+            new_shares.len(),
+            8,
+            "one new share per set-2 party (degree {} on {} parties)",
+            3,
+            8
+        );
+    }
 }
