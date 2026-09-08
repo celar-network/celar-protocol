@@ -79,6 +79,29 @@ enum Cmd {
         #[arg(long)]
         drop_role: Option<usize>,
     },
+    /// Upward reshare (§7.5, degree-decoupled): reshare the key held by the
+    /// previous epoch's committee UP to a larger committee at a HIGHER sharing
+    /// degree, decoupling the key's degree from the committee's corruption
+    /// threshold. Dummy preprocessing (dev) — the secure genesis offline is a
+    /// contribution-sum construction tracked separately, not the MPC offline.
+    UpwardReshare {
+        /// Directory holding the previous epoch (transcript.json or
+        /// reshare.json + share files) — the OLD committee (set 1).
+        #[arg(long = "in", value_name = "DIR")]
+        in_dir: PathBuf,
+        #[arg(long, default_value = "upward-epoch-out")]
+        out: PathBuf,
+        /// New committee size (set 2).
+        #[arg(long)]
+        new_parties: usize,
+        /// New sharing degree (set 2) — the decoupled degree; must exceed the
+        /// old committee's degree.
+        #[arg(long)]
+        new_threshold: usize,
+        /// Parties present in BOTH the old and new committees.
+        #[arg(long, default_value_t = 0)]
+        intersection: usize,
+    },
     /// N-party noise-flooded threshold decryption of a fixture value
     /// encrypted under the DKG's pk_G. --shares-dir may point at a LATER
     /// epoch (resharing functional proof: reshared shares decrypt the same pk_G).
@@ -273,6 +296,38 @@ async fn main() -> Result<()> {
                 outcome.transcript.wall_secs,
                 outcome.transcript.pk_g_sha256,
                 out.join("reshare.json").display(),
+            );
+            Ok(())
+        }
+        Cmd::UpwardReshare {
+            in_dir,
+            out,
+            new_parties,
+            new_threshold,
+            intersection,
+        } => {
+            eprintln!(
+                "celar-dkg: upward reshare (dummy preproc) from {} -> {new_parties} parties \
+                 at degree {new_threshold} (intersection {intersection})",
+                in_dir.display(),
+            );
+            let t = celar_kms::reshare::run_local_upward_reshare(
+                &in_dir,
+                &out,
+                new_parties,
+                new_threshold,
+                intersection,
+            )
+            .await?;
+            println!(
+                "UPWARD-RESHARE-OK old={}->new={} degree {}->{} wall={:.1}s pk_G {} (INVARIANT) transcript {}",
+                t.old_committee_parties,
+                t.new_committee_parties,
+                t.old_degree,
+                t.new_degree,
+                t.wall_secs,
+                t.pk_g_sha256,
+                out.join("upward-reshare.json").display(),
             );
             Ok(())
         }

@@ -851,4 +851,86 @@ mod upward_reshare_tests {
             "one new share per set-2 party (degree 3 on 8 parties)"
         );
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn local_upward_reshare_round_trips_over_files() {
+        // Build a previous-epoch fixture on disk (the old committee's share
+        // files + a reshare.json), upward-reshare it to a larger committee at a
+        // higher degree, and confirm the new committee's share files and the
+        // degree-change artifact are written and verify. This is the file
+        // round-trip the runner is used through in practice.
+        let params = dkg_params(ParamsChoice::Test);
+        let mut rng = aes_prng::AesRng::seed_from_u64(9);
+        let keyset = gen_uncompressed_key_set(params, tfhe::Tag::default(), &mut rng);
+
+        let old_parties = 7usize;
+        // Share the old key at the SAME degree the runner derives (the old
+        // committee's session threshold), so the shares it loads line up.
+        let old_degree = CommitteeConfig {
+            parties: old_parties,
+            ..Default::default()
+        }
+        .session_threshold();
+        let old_shares = keygen_all_party_shares_from_client_key::<_, EXTENSION_DEGREE>(
+            &keyset.client_key,
+            params.classic_pbs(),
+            &mut rng,
+            old_parties,
+            old_degree,
+        )
+        .expect("share old key");
+
+        let stamp = std::process::id();
+        let in_dir = std::env::temp_dir().join(format!("celar-upward-{stamp}-in"));
+        let out_dir = std::env::temp_dir().join(format!("celar-upward-{stamp}-out"));
+        fs::create_dir_all(&in_dir).unwrap();
+
+        for (i, s) in old_shares.iter().enumerate() {
+            fs::write(in_dir.join(share_file(i + 1)), bincode::serialize(s).unwrap()).unwrap();
+        }
+        // Minimal previous-epoch artifact (a same-set reshare.json).
+        let prev = ReshareTranscript {
+            schema: RESHARE_SCHEMA.to_string(),
+            epoch: 1,
+            prev_transcript_sha256: "genesis".to_string(),
+            pk_g_sha256: "pkg-fixture".to_string(),
+            committee_parties: old_parties,
+            params: "PARAMS_TEST_BK_SNS".to_string(),
+            preprocessing: "dummy-randoms".to_string(),
+            recovered_role: None,
+            parties: (1..=old_parties)
+                .map(|r| PartyRecord {
+                    role: r,
+                    share_commitment_sha256: "c".to_string(),
+                })
+                .collect(),
+            wall_secs: 0.0,
+            created_unix: 0,
+        };
+        prev.save(&in_dir.join("reshare.json")).unwrap();
+
+        // Upward to 8 parties at degree old_degree+1 (strictly upward); for the
+        // expected old degree of 2 this is the 8/3 config proven above.
+        let new_parties = 8usize;
+        let new_threshold = old_degree + 1;
+        let t = run_local_upward_reshare(&in_dir, &out_dir, new_parties, new_threshold, 0)
+            .await
+            .expect("upward reshare over files");
+
+        assert_eq!(t.old_committee_parties, old_parties);
+        assert_eq!(t.new_committee_parties, new_parties);
+        assert_eq!(t.new_degree, new_threshold);
+        assert_eq!(t.pk_g_sha256, "pkg-fixture", "pk_G invariant carried forward");
+        for r in 1..=new_parties {
+            assert!(out_dir.join(share_file(r)).exists(), "new share {r} written");
+        }
+        // The runner verified the artifact internally; re-verify the on-disk one.
+        UpwardReshareTranscript::load(&out_dir.join("upward-reshare.json"))
+            .unwrap()
+            .verify_against_keys(&out_dir)
+            .unwrap();
+
+        let _ = fs::remove_dir_all(&in_dir);
+        let _ = fs::remove_dir_all(&out_dir);
+    }
 }
