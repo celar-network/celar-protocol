@@ -26,7 +26,6 @@ use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
-use rand::SeedableRng;
 use serde::{Deserialize, Serialize};
 
 use algebra::base_ring::{Z64, Z128};
@@ -36,9 +35,6 @@ use threshold_execution::endpoints::reshare_sk::{
 };
 use threshold_execution::runtime::sessions::base_session::{BaseSession, GenericBaseSession};
 use threshold_execution::tfhe_internals::parameters::DKGParams;
-use threshold_execution::tfhe_internals::test_feature::{
-    keygen_all_party_shares_from_client_key, ClientKeyView,
-};
 use threshold_execution::tests::helper::tests_and_benches::execute_protocol_two_sets;
 use threshold_types::role::{TwoSetsRole, TwoSetsThreshold};
 use threshold_execution::config::BatchParams;
@@ -501,22 +497,28 @@ pub async fn run_local_reshare(
 // well-formed set-2 shares.
 // ---------------------------------------------------------------------------
 
-/// Drive an upward two-sets reshare of `client_key` from `parties_s1` parties at
-/// degree `t1` to `parties_s2` parties at degree `t2` (`intersection` parties in
-/// both sets), on dummy preprocessing. Returns set-2's new key shares.
+/// Drive an upward two-sets reshare of a key held by set 1 (`old_shares`, one
+/// per set-1 party at degree `t1`) up to `parties_s2` parties at degree `t2`
+/// (`intersection` parties in both sets), on dummy preprocessing. Returns set-2's
+/// new key shares.
+///
+/// `old_shares[i]` is set-1 party `i+1`'s share — in a deployment these are
+/// loaded from the previous epoch's files; the file wrapper and the test both
+/// supply them this way, which is what makes this the reusable driver.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_upward_reshare(
-    client_key: &tfhe::ClientKey,
+    old_shares: Vec<PrivateKeySet<EXTENSION_DEGREE>>,
     params: DKGParams,
-    parties_s1: usize,
     t1: usize,
     parties_s2: usize,
     t2: usize,
     intersection: usize,
 ) -> Result<Vec<PrivateKeySet<EXTENSION_DEGREE>>> {
-    let oprf_present = ClientKeyView::new(client_key)
-        .raw_oprf_client_key()
-        .is_some();
+    let parties_s1 = old_shares.len();
+    let oprf_present = old_shares
+        .first()
+        .map(|s| s.oprf_secret_key_share.is_some())
+        .unwrap_or(false);
     let threshold = TwoSetsThreshold {
         threshold_set_1: t1 as u8,
         threshold_set_2: t2 as u8,
@@ -525,36 +527,22 @@ pub async fn run_upward_reshare(
     let mut task = |mut common: GenericBaseSession<TwoSetsRole>,
                     session_s1: Option<BaseSession>,
                     session_s2: Option<BaseSession>| {
-        // Each set-1 party re-derives the SAME full sharing from a fixed seed
-        // and picks its own share — the simulation shape (a real deployment
-        // loads its share from the previous epoch's files).
-        let client_key = client_key.clone();
+        let old_shares = old_shares.clone();
         async move {
             let my_two_sets_role = common.my_role();
+            // Set-2 parties carry a plain set-2 Role in their own base session —
+            // capture it now, before that session is moved into the reshare call,
+            // so the returned share can be filed under its set-2 index.
+            let set2_role = session_s2.as_ref().map(|s| s.my_role().one_based());
 
-            let mut my_share: Option<PrivateKeySet<EXTENSION_DEGREE>> =
-                if session_s1.is_some() {
-                    let mut rng = aes_prng::AesRng::seed_from_u64(4242);
-                    let shares = keygen_all_party_shares_from_client_key::<_, EXTENSION_DEGREE>(
-                        &client_key,
-                        params.classic_pbs(),
-                        &mut rng,
-                        parties_s1,
-                        t1,
-                    )
-                    .expect("sharing the key across set 1");
-                    Some(
-                        session_s1
-                            .as_ref()
-                            .unwrap()
-                            .my_role()
-                            .get_from(&shares)
-                            .expect("my set-1 share")
-                            .clone(),
-                    )
-                } else {
-                    None
-                };
+            let mut my_share: Option<PrivateKeySet<EXTENSION_DEGREE>> = session_s1
+                .as_ref()
+                .map(|s1| {
+                    s1.my_role()
+                        .get_from(&old_shares)
+                        .expect("my set-1 share")
+                        .clone()
+                });
 
             // Set-2 preprocessing: dummy randoms sized by upstream's accounting.
             let (mut preproc_64, mut preproc_128) = if let Some(s2) = session_s2.as_ref() {
@@ -615,7 +603,7 @@ pub async fn run_upward_reshare(
                 ),
             };
 
-            (my_two_sets_role, out)
+            (set2_role, out)
         }
     };
 
@@ -630,15 +618,204 @@ pub async fn run_upward_reshare(
     )
     .await;
 
-    // Set-2 parties (OnlySet2 and Both) return their new share; set-1-only
-    // parties return None.
-    Ok(results.into_iter().filter_map(|(_, o)| o).collect())
+    // Set-2 parties (OnlySet2 and Both) return their new share indexed by set-2
+    // role; set-1-only parties return None. Return the shares in set-2 role order
+    // so the caller can file each under `share_file(role)`.
+    let mut collected: Vec<(usize, PrivateKeySet<EXTENSION_DEGREE>)> = results
+        .into_iter()
+        .filter_map(|(idx, share)| match (idx, share) {
+            (Some(i), Some(s)) => Some((i, s)),
+            _ => None,
+        })
+        .collect();
+    collected.sort_by_key(|(i, _)| *i);
+    Ok(collected.into_iter().map(|(_, s)| s).collect())
+}
+
+pub const UPWARD_RESHARE_SCHEMA: &str = "celar-upward-reshare-transcript/v0";
+
+/// Artifact for an UPWARD reshare. Unlike a same-set reshare, both the committee
+/// and the sharing degree change (an `old_committee_parties`-party set at
+/// `old_degree` becomes a `new_committee_parties`-party set at `new_degree`), so
+/// this cannot reuse [`ReshareTranscript`], whose verification hard-rejects a
+/// committee change. What stays invariant is pk_G: resharing never touches public
+/// material, so the key — and therefore its public key — is unchanged.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpwardReshareTranscript {
+    pub schema: String,
+    pub prev_transcript_sha256: String,
+    pub pk_g_sha256: String,
+    pub old_committee_parties: usize,
+    pub new_committee_parties: usize,
+    pub old_degree: usize,
+    pub new_degree: usize,
+    pub params: String,
+    pub preprocessing: String,
+    /// The NEW committee's share commitments.
+    pub parties: Vec<PartyRecord>,
+    pub wall_secs: f64,
+    pub created_unix: u64,
+}
+
+impl UpwardReshareTranscript {
+    pub fn save(&self, path: &Path) -> Result<()> {
+        fs::write(path, serde_json::to_string_pretty(self)?)
+            .with_context(|| format!("writing {}", path.display()))?;
+        Ok(())
+    }
+
+    pub fn load(path: &Path) -> Result<Self> {
+        Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
+    }
+
+    /// Verify against the previous epoch: schema, the chain digest, the pk_G
+    /// invariant, and that the degree actually rose. The committee and degree
+    /// are EXPECTED to change, so those are recorded rather than rejected.
+    pub fn verify_against_prev(&self, prev_path: &Path) -> Result<()> {
+        if self.schema != UPWARD_RESHARE_SCHEMA {
+            bail!("unknown schema {:?}", self.schema);
+        }
+        let prev_bytes = fs::read(prev_path)
+            .with_context(|| format!("reading previous transcript {}", prev_path.display()))?;
+        if sha256_hex(&prev_bytes) != self.prev_transcript_sha256 {
+            bail!("chain broken: previous transcript digest does not match recorded");
+        }
+        // Every artifact type carries pk_g_sha256 at the top level.
+        let prev_json: serde_json::Value = serde_json::from_slice(&prev_bytes)?;
+        let prev_pk = prev_json["pk_g_sha256"]
+            .as_str()
+            .context("previous transcript has no pk_g_sha256")?;
+        if self.pk_g_sha256 != prev_pk {
+            bail!("pk_G CHANGED across upward reshare — §7.5 invariant violated");
+        }
+        if self.new_degree <= self.old_degree {
+            bail!(
+                "an upward reshare must raise the degree ({} -> {})",
+                self.old_degree,
+                self.new_degree
+            );
+        }
+        Ok(())
+    }
+
+    pub fn verify_against_keys(&self, keys_dir: &Path) -> Result<()> {
+        for p in &self.parties {
+            let bytes = fs::read(keys_dir.join(share_file(p.role)))?;
+            if sha256_hex(&bytes) != p.share_commitment_sha256 {
+                bail!("share commitment mismatch for party {}", p.role);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Run an upward reshare locally: read the previous epoch's artifact + dev share
+/// files from `in_dir`, reshare the key up to a `new_parties`-party committee at
+/// degree `new_threshold` (`intersection` parties in both sets), and write the
+/// new share files + `upward-reshare.json` into `out_dir`. Dummy preprocessing
+/// (dev); the secure-large offline phase is a documented follow-on.
+pub async fn run_local_upward_reshare(
+    in_dir: &Path,
+    out_dir: &Path,
+    new_parties: usize,
+    new_threshold: usize,
+    intersection: usize,
+) -> Result<UpwardReshareTranscript> {
+    // Previous epoch: prefer a reshare artifact, else the genesis transcript.
+    let (prev_path, prev_pk, old_parties, prev_params) = {
+        let reshare_path = in_dir.join("reshare.json");
+        let genesis_path = in_dir.join("transcript.json");
+        if reshare_path.exists() {
+            let p = ReshareTranscript::load(&reshare_path)?;
+            (reshare_path, p.pk_g_sha256, p.committee_parties, p.params)
+        } else {
+            let p = Transcript::load(&genesis_path)?;
+            (genesis_path, p.pk_g_sha256, p.parties.len(), p.dkg.params)
+        }
+    };
+    let params_choice = params_choice_from_name(&prev_params)?;
+    let params = dkg_params(params_choice);
+    let old_degree = CommitteeConfig {
+        parties: old_parties,
+        ..Default::default()
+    }
+    .session_threshold();
+
+    // Load the old committee's shares (set 1) from files, in role order.
+    let mut old_shares: Vec<PrivateKeySet<EXTENSION_DEGREE>> = Vec::with_capacity(old_parties);
+    for role in 1..=old_parties {
+        let bytes = fs::read(in_dir.join(share_file(role)))
+            .with_context(|| format!("reading previous-epoch share for party {role}"))?;
+        old_shares.push(bincode::deserialize(&bytes).context("deserializing share")?);
+    }
+
+    fs::create_dir_all(out_dir)?;
+    let started = Instant::now();
+    let new_shares = run_upward_reshare(
+        old_shares,
+        params,
+        old_degree,
+        new_parties,
+        new_threshold,
+        intersection,
+    )
+    .await?;
+    let wall_secs = started.elapsed().as_secs_f64();
+
+    if new_shares.len() != new_parties {
+        bail!(
+            "only {}/{} new-committee parties produced a share",
+            new_shares.len(),
+            new_parties
+        );
+    }
+
+    let mut party_records = Vec::with_capacity(new_parties);
+    for (i, share) in new_shares.iter().enumerate() {
+        let role = i + 1;
+        let bytes = bincode::serialize(share).context("serializing new share")?;
+        party_records.push(PartyRecord {
+            role,
+            share_commitment_sha256: sha256_hex(&bytes),
+        });
+        fs::write(out_dir.join(share_file(role)), &bytes)?;
+    }
+    fs::write(
+        out_dir.join("DEV-KEYS-WARNING.txt"),
+        "Upward-reshared key material written by a DEV run for transcript\n\
+         re-verification. A real ceremony never persists shares unprotected.\n",
+    )?;
+
+    let transcript = UpwardReshareTranscript {
+        schema: UPWARD_RESHARE_SCHEMA.to_string(),
+        prev_transcript_sha256: sha256_hex(&fs::read(&prev_path)?),
+        pk_g_sha256: prev_pk,
+        old_committee_parties: old_parties,
+        new_committee_parties: new_parties,
+        old_degree,
+        new_degree: new_threshold,
+        params: prev_params,
+        preprocessing: "dummy-randoms".to_string(),
+        parties: party_records,
+        wall_secs,
+        created_unix: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    };
+    transcript.save(&out_dir.join("upward-reshare.json"))?;
+    transcript.verify_against_prev(&prev_path)?;
+    transcript.verify_against_keys(out_dir)?;
+    Ok(transcript)
 }
 
 #[cfg(test)]
 mod upward_reshare_tests {
     use super::*;
     use rand::SeedableRng;
+    use threshold_execution::tfhe_internals::test_feature::{
+        gen_uncompressed_key_set, keygen_all_party_shares_from_client_key,
+    };
 
     #[tokio::test(flavor = "multi_thread")]
     async fn upward_reshare_produces_well_formed_set2_shares() {
@@ -649,17 +826,18 @@ mod upward_reshare_tests {
         // share per set-2 party.
         let params = dkg_params(ParamsChoice::Test);
         let mut rng = aes_prng::AesRng::seed_from_u64(7);
-        let keyset = threshold_execution::tfhe_internals::test_feature::gen_uncompressed_key_set(
-            params,
-            tfhe::Tag::default(),
-            &mut rng,
-        );
-
-        let new_shares = run_upward_reshare(
+        let keyset = gen_uncompressed_key_set(params, tfhe::Tag::default(), &mut rng);
+        let old_shares = keygen_all_party_shares_from_client_key::<_, EXTENSION_DEGREE>(
             &keyset.client_key,
-            params,
+            params.classic_pbs(),
+            &mut rng,
             7, // parties_s1
             2, // t1
+        )
+        .expect("sharing the old key");
+
+        let new_shares = run_upward_reshare(
+            old_shares, params, 2, // t1
             8, // parties_s2
             3, // t2
             0, // intersection
@@ -670,9 +848,7 @@ mod upward_reshare_tests {
         assert_eq!(
             new_shares.len(),
             8,
-            "one new share per set-2 party (degree {} on {} parties)",
-            3,
-            8
+            "one new share per set-2 party (degree 3 on 8 parties)"
         );
     }
 }
