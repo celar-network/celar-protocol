@@ -115,7 +115,7 @@ enum Cmd {
         /// Fixture plaintext to encrypt and threshold-decrypt.
         #[arg(long, default_value_t = 42)]
         value: u64,
-        /// Session family: large (PRODUCTION — TUniform flooding at 50,
+        /// Session family: large (PRODUCTION — TUniform flooding at 52,
         /// scales to genesis, backs the §7.2 budget; needs c ≥ 4t+1) |
         /// small (DEV — PRSS at 40, small committees, does not back the
         /// budget).
