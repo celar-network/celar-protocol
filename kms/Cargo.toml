@@ -22,9 +22,15 @@
 #     upward reshare to a high degree (a degree-78 key on a 100-seat
 #     committee) reconstructs instead of aborting. Inert for standard
 #     configs. Consumed by the upward-reshare wiring.
-#     ⚠️ Any future re-pin must re-apply BOTH commits (STATSEC_TUNIFORM and
-#     the degree/tolerance split) — the carrier branch celar/statsec-tuniform-50
-#     holds them in sequence.
+#   → celar-network/kms@b79e997d on 2026-09-05: a third carrier commit —
+#     tightens LOG_B_SWITCH_SQUASH 70→68 (the DERIVED switch-and-squash bound,
+#     ≈2^67.9, vs the loose 70 ceiling) and raises STATSEC_TUNIFORM 50→52. The
+#     freed margin buys two bits of statistical security, so the per-epoch
+#     decryption budget Q_max rises 2^10→2^12 (see budget.rs). Both compile-time
+#     margin asserts still hold at the new pair.
+#     ⚠️ Any future re-pin must re-apply ALL THREE commits (STATSEC_TUNIFORM,
+#     the degree/tolerance split, and the derived-bound/λ=52 tightening) — the
+#     carrier branch celar/statsec-tuniform-50 holds them in sequence.
 # NOTE: STATSEC_TUNIFORM = 50 makes the 50-bit flooding parameter AVAILABLE;
 # it is not IN FORCE until the decrypt path runs the large-session
 # noiseflood route. budget.rs enforces that distinction and refuses until then.
@@ -41,13 +47,13 @@ name = "celar-dkg"
 path = "src/bin/celar_dkg.rs"
 
 [dependencies]
-threshold-execution = { git = "https://github.com/celar-network/kms.git", rev = "d5e3075e3afd7e05dd453f61229ad616343c047e", features = ["testing"] }
-threshold-networking = { git = "https://github.com/celar-network/kms.git", rev = "d5e3075e3afd7e05dd453f61229ad616343c047e" }
-threshold-types = { git = "https://github.com/celar-network/kms.git", rev = "d5e3075e3afd7e05dd453f61229ad616343c047e" }
+threshold-execution = { git = "https://github.com/celar-network/kms.git", rev = "b79e997daf39f2b8b05575093a8e76e706526b84", features = ["testing"] }
+threshold-networking = { git = "https://github.com/celar-network/kms.git", rev = "b79e997daf39f2b8b05575093a8e76e706526b84" }
+threshold-types = { git = "https://github.com/celar-network/kms.git", rev = "b79e997daf39f2b8b05575093a8e76e706526b84" }
 # NOTE (0.13.22 → main): threshold-algebra dropped its [features] section
 # entirely at this rev — extension degrees are now unconditional, so the old
 # `extension_degree_4` feature (and default-features = false) must go.
-algebra = { package = "threshold-algebra", git = "https://github.com/celar-network/kms.git", rev = "d5e3075e3afd7e05dd453f61229ad616343c047e" }
+algebra = { package = "threshold-algebra", git = "https://github.com/celar-network/kms.git", rev = "b79e997daf39f2b8b05575093a8e76e706526b84" }
 
 # Must match the kms workspace pins exactly — these types cross the API
 # boundary (tfhe::Tag; tonic/rustls types into GrpcNetworkingManager).

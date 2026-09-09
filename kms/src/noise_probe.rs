@@ -371,7 +371,13 @@ mod closed_form {
     /// c_err,1 — the scheme's tail-cut constant for ring dimension one:
     /// erfc(13.15/√2) < 2^-128.
     const Z_TAILCUT: f64 = 13.15;
-    const CEILING_LOG2: f64 = 70.0;
+    /// The DEPLOYED switch-and-squash bound the flooding mask is sized against
+    /// (the fork's `LOG_B_SWITCH_SQUASH`, mirrored by `budget::LOG_B_EVAL`).
+    /// Tightened from the loose vendor ceiling (2^70) to 2^68 — asserting the
+    /// derived bound clears THIS value is what makes 2^68 a safe mask-sizing
+    /// constant, and it is what pays for λ_stat = 52 / Q_max = 4096. The margin
+    /// is deliberately tight (the derived production bound is ≈ 2^67.9).
+    const CEILING_LOG2: f64 = 68.0;
 
     /// Test parameter set: noise-squashing glwe_dimension 1, polynomial_size
     /// 256, decomp_base_log 33, decomp_level_count 2, glwe noise TUniform(0);
