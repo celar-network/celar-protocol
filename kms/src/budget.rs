@@ -81,35 +81,43 @@ pub const LAMBDA_STAT_PREFERRED: u32 = 64;
 /// budget computed from a larger value enforces a ceiling the flooding does
 /// not provide; a smaller one wastes real capacity.
 ///
-/// 50 as of the decrypt-path switch (2026-08-29): the production path is
+/// 52 as of the derived-bound adoption (2026-09-05): the production path is
 /// the large-session TUniform route (`decrypt::DecryptSession::Large`,
-/// the default), flooding at `STATSEC_TUNIFORM = 50` via the celar fork.
+/// the default), flooding at `STATSEC_TUNIFORM = 52` via the celar fork.
+/// Raised 50→52 by tightening the switch-and-squash bound from its loose
+/// ceiling (2^70) to its derived value (2^68) — the freed margin buys two
+/// bits of λ_stat, and hence 4× the per-epoch Q_max (2^10 → 2^12).
 /// Mirror-tested against BOTH `decrypt::PRODUCTION_FLOODING_STATSEC` (so a
 /// decrypt-path change breaks the suite, not the budget's honesty) and the
 /// fork's exported constant (so an upstream change does the same).
-pub const DEPLOYED_FLOODING_STATSEC: u32 = 50;
+pub const DEPLOYED_FLOODING_STATSEC: u32 = 52;
 
 /// Hard ceiling on any future λ_stat, from the decryption margin — NOT a
 /// tunable. Decryption rounds at Δ = 2^123 with message+carry in bits
 /// 123..=126, so total noise must stay under Δ/2 = 2^122. The flooding mask
-/// on the large-session path is bounded by 2^(70 + λ_stat + 1) and rides on
-/// top of the real post-squash noise (≤ 2^70), giving
-///   2^(71 + λ_stat) + 2^70 < 2^122  ⟺  λ_stat ≤ 50.
-/// (Earlier analysis said 51; that neglected the additive 2^70 term, which
-/// upstream's own tightness argument absorbs via PRSS-set slack that does
-/// not exist on the flat path. 50 leaves 2× residual headroom; 51 leaves
-/// none, which also matters for corruption resistance.)
+/// on the large-session path is bounded by 2^(LOG_B_EVAL + λ_stat + 1) and
+/// rides on top of the real post-squash noise (≤ 2^LOG_B_EVAL). With the
+/// DERIVED bound LOG_B_EVAL = 68 that gives
+///   2^(69 + λ_stat) + 2^68 < 2^122  ⟺  λ_stat ≤ 52.
+/// (It was 50 while the bound was the loose 70; the two move together —
+/// tightening the noise bound to its derived value is exactly what raises
+/// this ceiling. 52 leaves one bit of headroom; 53 fails the margin.)
 ///
 /// Raising the library's STATSEC above this silently corrupts plaintexts:
 /// there is no upstream assertion that the mask fits under Δ/2, and the
-/// first hard error does not fire until 57.
-pub const MAX_SAFE_LAMBDA_STAT: u32 = 50;
+/// first hard error (the PRF bd1 bound, 2^(68+STATSEC) ≤ 2^126) does not
+/// fire until 59.
+pub const MAX_SAFE_LAMBDA_STAT: u32 = 52;
 
-/// log₂ of the assumed post-squash evaluated-noise bound the flooding mask
-/// is sized against (the library's `LOG_B_SWITCH_SQUASH`). Anchored here for
-/// the same reason as [`DEPLOYED_FLOODING_STATSEC`]: the budget's arithmetic
-/// must state, in one place, the constants it is physically backed by.
-pub const LOG_B_EVAL: u32 = 70;
+/// log₂ of the post-squash evaluated-noise bound the flooding mask is sized
+/// against (the library's `LOG_B_SWITCH_SQUASH`). Anchored here for the same
+/// reason as [`DEPLOYED_FLOODING_STATSEC`]: the budget's arithmetic must state,
+/// in one place, the constants it is physically backed by. 68 — the DERIVED
+/// bound (closed-form eq. (17̄)+FFTNoise at the deployed parameters is ≈ 2^67.9
+/// with the vendor tail-cut c_err,1 = 13.15; 68 is the conservative integer
+/// above it). Was the loose 70; tightening it is what freed the two λ_stat
+/// bits above.
+pub const LOG_B_EVAL: u32 = 68;
 
 /// log₂ of the flooding-mask sampling bound on the production (large-session
 /// TUniform) path: each flooding term is drawn from a range of half-width
@@ -128,12 +136,12 @@ pub const LOG_FLOODING_MASK_BOUND: u32 = LOG_B_EVAL + DEPLOYED_FLOODING_STATSEC;
 /// constant adds the floor that makes GROSS under-flooding a proof failure
 /// instead of a silent leak.
 ///
-/// Derivation of the value — why 2^70 and not something else:
+/// Derivation of the value — why 2^68 (= B_eval) and not something else:
 /// * Semantically, the mask must be at least as large as the evaluated
 ///   noise it exists to drown, so the floor is B_eval = 2^LOG_B_EVAL.
 /// * Statistically, an honest seat draws uniformly from a range of
 ///   half-width 2^120, so the check rejects an honest draw with probability
-///   2^70 / 2^120 = 2^-λ_stat — the same probability class the flooding
+///   2^68 / 2^120 = 2^-λ_stat — the same probability class the flooding
 ///   argument already spends per decryption. The identity
 ///   B_min = mask_bound / 2^λ_stat holds by construction, so the honest
 ///   false-reject probability is ALWAYS 2^-λ_stat, whatever the parameters.
@@ -428,9 +436,9 @@ mod tests {
         let mut p = BudgetParams::with_q_max(1 << 24);
         p.lambda_stat = 64;
         assert_eq!(p.max_admissible_q_max(), 1 << 24);
-        // At the future λ_stat = 50 the ceiling is 2^10 = 1024.
-        p.lambda_stat = 50;
-        assert_eq!(p.max_admissible_q_max(), 1 << 10);
+        // At the deployed λ_stat = 52 the ceiling is 2^12 = 4096.
+        p.lambda_stat = 52;
+        assert_eq!(p.max_admissible_q_max(), 1 << 12);
     }
 
     #[test]
@@ -445,14 +453,12 @@ mod tests {
 
     #[test]
     fn the_shipped_budget_is_finally_real() {
-        // The replacement assertion pre-written into this test's
-        // predecessor (`current_truth_no_valid_budget_exists_yet`) the day
-        // it was pinned, now activated: with the production decrypt path
-        // flooding at 50 against λ_target = 40, the §7.2 ceiling is
-        // 2^10 = 1024 — and the published number, the fork constant and
-        // this enforcement finally agree.
-        BudgetParams::with_q_max(1024).validate().unwrap();
-        let mut over = BudgetParams::with_q_max(1025);
+        // With the production decrypt path flooding at 52 against
+        // λ_target = 40, the §7.2 ceiling is 2^12 = 4096 — and the published
+        // number, the fork constant and this enforcement agree. (Was 1024 at
+        // λ_stat = 50, before the derived-bound tightening raised the ceiling.)
+        BudgetParams::with_q_max(4096).validate().unwrap();
+        let mut over = BudgetParams::with_q_max(4097);
         over.per_contract_max = 1;
         let err = over.validate().unwrap_err().to_string();
         assert!(err.contains("flooding ceiling"), "{err}");
@@ -460,10 +466,12 @@ mod tests {
 
     #[test]
     fn max_safe_lambda_stat_is_below_the_prf_error_floor() {
-        // The first upstream *hard* error fires at STATSEC 57 (prf.rs bd1
-        // bound). Everything in 51..=56 corrupts silently. Our cap must sit
-        // strictly below the silent band, not just below the error.
-        assert!(MAX_SAFE_LAMBDA_STAT < 51);
+        // With the derived bound (LOG_B_EVAL = 68), corruption starts at
+        // STATSEC 53 (68+53+1 = 122, no longer < 122). The first upstream
+        // *hard* error is later still (the PRF bd1 bound, 2^(68+STATSEC) ≤ 2^126,
+        // fires at 59), so 53..=58 corrupts SILENTLY. Our cap must sit strictly
+        // below that silent band, not just below the hard error.
+        assert!(MAX_SAFE_LAMBDA_STAT < 53);
     }
 
     #[test]
