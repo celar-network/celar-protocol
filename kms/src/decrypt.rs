@@ -86,9 +86,9 @@ pub const PRODUCTION_FLOODING_STATSEC: u32 = threshold_execution::constants::STA
 /// Which session family runs the threshold decryption.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecryptSession {
-    /// Large session, TUniform flooding at `STATSEC_TUNIFORM` (= 50 on the
-    /// celar fork). THE PRODUCTION PATH — scales to genesis, backs the
-    /// §7.2 budget.
+    /// Large session, TUniform flooding at `STATSEC_TUNIFORM` (= 52 on the
+    /// celar fork, since the derived-bound tightening). THE PRODUCTION PATH —
+    /// scales to genesis, backs the §7.2 budget.
     Large,
     /// Small session, PRSS flooding at `STATSEC` (= 40). Dev/comparison
     /// only: hard-capped at small committees and does NOT back the budget.

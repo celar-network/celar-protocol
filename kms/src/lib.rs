@@ -60,11 +60,12 @@ pub const EXTENSION_DEGREE: usize = 7;
 
 /// The upstream pin, recorded into every transcript. Pin history:
 /// zama v0.13.22 (tfhe 1.6.1) → zama main@c6b0fdd3 (tfhe 1.7.0, aligning
-/// with the compute backend) → celar-network/kms@8015482e (one commit on
-/// c6b0fdd3: per-path flooding parameter, STATSEC_TUNIFORM = 50, ceiling
-/// assertions — the vendor accepts no external PRs, so the fork is the
+/// with the compute backend) → celar-network/kms carrier branch (per-path
+/// flooding parameter STATSEC_TUNIFORM = 52 after the derived-bound
+/// tightening, degree/tolerance split, ceiling assertions — the vendor
+/// accepts no external PRs, so the fork is the
 /// standing carrier; proposed upstream as zama-ai/kms#807/#808).
 /// A transcript's pin now names the FORK — deliberately, since the flooding
 /// parameter it implies differs from the vendor tree's.
 pub const UPSTREAM_REPO: &str = "https://github.com/celar-network/kms";
-pub const UPSTREAM_TAG: &str = "celar/statsec-tuniform-50@8015482e5ef14a2f57b1f792e584a7fa0533d728";
+pub const UPSTREAM_TAG: &str = "celar/statsec-tuniform-50@b79e997daf39f2b8b05575093a8e76e706526b84";
