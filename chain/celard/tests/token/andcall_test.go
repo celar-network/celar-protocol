@@ -14,7 +14,7 @@ import (
 )
 
 // The four checks below were written in the review, before
-// the implementation existed (`tasks/D5/07` §5d). They are
+// the implementation existed. They are
 // reproduced in that order and not reordered to suit the
 // code, which is the whole point of pre-specifying them.
 
@@ -215,7 +215,7 @@ func TestRefundEmitsItsOwnDistinguishableEvent(t *testing.T) {
 // the original is consistent with a zero move but does not
 // prove one. The value-level assertion belongs at the
 // backend, where decryption exists, exactly as the shared-
-// handle question was settled. Filed as D5.10.4.
+// handle question was settled. Tracked internally.
 func TestMisbehavingReceiverKeepsTheTokens(t *testing.T) {
 	f := deployToken(t)
 	f.send(t, f.owner, "mint", f.owner, uint64(100))
