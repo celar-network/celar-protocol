@@ -1,0 +1,47 @@
+syntax = "proto3";
+package celar.fraudevidence.v1;
+
+option go_package = "github.com/cosmos/evm/evmd/fraudevidence/types";
+
+// Verdict is a recorded conviction: one seat, one epoch, and the evidence it
+// was convicted on.
+//
+// It exists as chain state rather than as an event because a conviction has to
+// be readable after the block that produced it. A slashing hook consumes it, a
+// later submission must not convict the same seat twice for the same evidence,
+// and anyone auditing the accountability path needs to see what was decided
+// rather than reconstruct it from logs.
+//
+// Field numbers are the canonical encoding, fixed from the first byte written,
+// for the same reason the commitment archive fixed its own: if either side
+// ever hashes one of these, it hashes the proto form under these numbers and
+// no other canonical form exists.
+message Verdict {
+  // One-based committee role of the convicted seat. Zero is malformed
+  // evidence, never a seat.
+  uint32 seat_role = 1;
+
+  // Key epoch the misconduct occurred under. Pairs with seat_role as the key,
+  // matching how the commitment archive names the same thing.
+  uint64 epoch = 2;
+
+  // Digest of the evidence that convicted. Recorded so a second submission of
+  // the SAME evidence is idempotent rather than a second conviction, and so an
+  // auditor can tie a verdict to the material that produced it.
+  string evidence_sha256 = 3;
+
+  // Height at which the conviction was recorded. Distinct from the height the
+  // evidence proves against: one is when the misconduct was provable, the
+  // other is when the chain acted. Conflating them would make the punishment
+  // window unauditable.
+  uint64 recorded_height = 4;
+
+  // Whether punishment has been applied.
+  //
+  // Deliberately a field rather than an inference from the verdict existing.
+  // The punishment hook waits on a decision this module does not own, so for
+  // now every verdict is recorded with this false, and a verdict that convicts
+  // without punishing is visibly incomplete rather than silently equivalent to
+  // one that did. When the hook lands, this is what stops it running twice.
+  bool punished = 5;
+}
