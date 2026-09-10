@@ -1,0 +1,5 @@
+#!/bin/sh
+# The commit-msg hook guards the message; this guards the files.
+# The message was clean the day an id reached a committed source
+# comment, so guarding one and not the other is half a guard.
+exec "$(git rev-parse --show-toplevel)/scripts/check-internal-ids.sh"
