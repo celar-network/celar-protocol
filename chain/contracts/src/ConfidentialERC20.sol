@@ -21,13 +21,24 @@ import {TFHE, euint64, ebool} from "./TFHE.sol";
 /// "return the actual amount" convention is the same
 /// idea arrived at independently.
 ///
-/// ## Deferred by design
+/// ## Deferred by design — now empty
 ///
-/// The AndCall family is not implemented. It is a
-/// reentrancy surface that interacts with first-writer-
-/// wins registration and wants review, not addition.
-/// Time-boxed operators and confidentialTransferFrom
-/// were deferred here too, and have since been added.
+/// The AndCall family was deferred as a reentrancy
+/// surface wanting review rather than addition. The
+/// review is done (verdict: safe with a guard, not
+/// provisional) and the owner decided to ship it, so it
+/// is implemented below. Time-boxed operators and
+/// confidentialTransferFrom were deferred here too and
+/// landed earlier.
+///
+/// ## The refund is best-effort, and that is inherited
+///
+/// A receiver may shrink its own balance during the
+/// callback, return false, and the refund then moves
+/// zero — the sender's tokens stay with the recipient.
+/// This is the reference standard's behaviour, not
+/// something added here, and it is asserted by a test
+/// rather than left as a caveat nobody reads.
 ///
 /// ## Known-unsound dependency
 ///
@@ -57,6 +68,21 @@ import {TFHE, euint64, ebool} from "./TFHE.sol";
 /// Documented rather than mitigated, because a mitigation
 /// that reads like protection and isn't is worse than a
 /// stated exposure.
+/// Receiver hook for the AndCall family.
+///
+/// Returning false asks for a refund. Reverting is NOT
+/// the same thing: a revert bubbles and undoes the whole
+/// transfer, which is the receiver's right and needs no
+/// refund path. Only an explicit false triggers one.
+interface IConfidentialTransferReceiver {
+    function onConfidentialTransferReceived(
+        address operator,
+        address from,
+        euint64 amount,
+        bytes calldata data
+    ) external returns (bool);
+}
+
 contract ConfidentialERC20 {
     // ---- metadata ----------------------------------
 
@@ -84,6 +110,22 @@ contract ConfidentialERC20 {
     /// attacker read access to the result.
     mapping(bytes32 => mapping(address => bool)) private _issuedTo;
 
+    /// Depth of the callback path only — deliberately NOT a
+    /// global reentrancy lock.
+    ///
+    /// A receiver making an ordinary transfer during its
+    /// callback is legitimate and must keep working; the
+    /// review's finding is that such a call is harmless by
+    /// construction, because _record is an additive
+    /// idempotent set insertion and cannot displace a
+    /// claimant. A blanket guard would break that
+    /// legitimate case AND hide the property, leaving a
+    /// test that passes for the wrong reason. What this
+    /// blocks is a nested AndCall, where two refund paths
+    /// could interleave over one amount.
+    uint256 private _inCallback;
+
+    error ReentrantCallback();
     error HandleNotIssuedToCaller(bytes32 handle);
     error TransferToZero();
 
@@ -187,6 +229,72 @@ contract ConfidentialERC20 {
             revert HandleNotIssuedToCaller(amount);
         }
         return _transfer(msg.sender, to, euint64.wrap(amount));
+    }
+
+    /// Transfer, then notify the recipient in one call.
+    ///
+    /// The callback fires AFTER every state write in
+    /// _transfer — balances, grants, provenance and the
+    /// event. That ordering is a requirement, not a
+    /// preference: the self-transfer fix re-reads
+    /// _balances[to] after the debit and assumes nothing
+    /// interleaves between the two writes.
+    function confidentialTransferAndCall(address to, bytes32 amount, bytes calldata data)
+        external
+        returns (bytes32)
+    {
+        if (!_issuedTo[amount][msg.sender]) {
+            revert HandleNotIssuedToCaller(amount);
+        }
+        bytes32 moved = _transfer(msg.sender, to, euint64.wrap(amount));
+        _notify(msg.sender, msg.sender, to, euint64.wrap(moved), data);
+        return moved;
+    }
+
+    /// The delegated form. Both plaintext checks are the
+    /// delegated path's, unchanged — see
+    /// confidentialTransferFrom for why the second one is
+    /// not ceremony.
+    function confidentialTransferFromAndCall(address from, address to, bytes32 amount, bytes calldata data)
+        external
+        returns (bytes32)
+    {
+        if (msg.sender != from && !isOperator(from, msg.sender)) {
+            revert NotAnOperator(from, msg.sender);
+        }
+        if (!_issuedTo[amount][from] && !_issuedTo[amount][msg.sender]) {
+            revert HandleNotIssuedToCaller(amount);
+        }
+        bytes32 moved = _transfer(from, to, euint64.wrap(amount));
+        _notify(msg.sender, from, to, euint64.wrap(moved), data);
+        return moved;
+    }
+
+    /// Calls the receiver hook and refunds on refusal.
+    ///
+    /// An EOA recipient has no hook, so there is nothing to
+    /// call and nothing to refuse. Skipping the call for
+    /// code-less accounts is not an optimisation: calling a
+    /// plain address returns success with empty returndata,
+    /// which would decode as a refusal and refund every
+    /// transfer to an EOA.
+    function _notify(address operator, address from, address to, euint64 amount, bytes calldata data) private {
+        if (to.code.length == 0) return;
+        if (_inCallback != 0) revert ReentrantCallback();
+        _inCallback = 1;
+        bool accepted = IConfidentialTransferReceiver(to).onConfidentialTransferReceived(operator, from, amount, data);
+        _inCallback = 0;
+
+        if (!accepted) {
+            // The refund is an ordinary transfer back, so it
+            // emits its own ConfidentialTransfer and an
+            // indexer can tell it from the original by
+            // direction. It is best-effort by construction:
+            // if the receiver spent what it was sent, the
+            // branchless rule moves zero rather than
+            // reverting, and the tokens stay put.
+            _transfer(to, from, amount);
+        }
     }
 
     /// Admits a fresh client ciphertext, then transfers
