@@ -39,13 +39,17 @@ use threshold_execution::endpoints::keygen::{
     OnlineDistributedKeyGen, SecureOnlineDistributedKeyGen128,
 };
 use threshold_execution::keyset_config::KeySetConfig;
+use threshold_execution::large_execution::offline::SecureLargePreprocessing;
+use threshold_execution::online::preprocessing::memory::InMemoryBasePreprocessing;
 use threshold_execution::online::preprocessing::{create_memory_factory, DKGPreprocessing};
+use threshold_execution::runtime::sessions::large_session::LargeSession;
 use threshold_execution::runtime::sessions::base_session::{
     BaseSession, GenericBaseSessionHandles, ToBaseSession,
 };
 use threshold_execution::runtime::sessions::small_session::SmallSession;
 use threshold_execution::runtime::sessions::session_parameters::SessionParameters;
 use threshold_execution::online::preprocessing::RandomPreprocessing;
+use threshold_execution::online::preprocessing::TriplePreprocessing;
 use threshold_execution::sharing::open::{RobustOpen, SecureRobustOpen};
 use threshold_execution::small_execution::offline::{Preprocessing, SecureSmallPreprocessing};
 use threshold_execution::small_execution::prss::{DerivePRSSState, PRSSInit, RobustSecurePrssInit};
@@ -382,6 +386,146 @@ pub async fn run_ceremony(cfg: &NodeConfig) -> Result<TranscriptFragment> {
 
     let started = Instant::now();
 
+    let (compressed_pk, sk) = if cfg.committee.preprocessing
+        == crate::config::PreprocMode::SecureLarge
+    {
+        // ---- SECURE-LARGE offline (genesis-capable). No PRSS: the large-
+        // session VSS machinery provides the randomness, and PRSS is
+        // structurally refused at genesis size (the set-count correctness
+        // cap). Same Sync-offline → Async-keygen split as the PRSS path;
+        // chunked batches per the simulator's batch-ceiling finding.
+        let mut large = LargeSession::new(base);
+        let params_dkg = match cfg.committee.params {
+            crate::config::ParamsChoice::Test => {
+                threshold_execution::tfhe_internals::parameters::PARAMS_TEST_BK_SNS
+            }
+            crate::config::ParamsChoice::NistP32SnsFglwe => {
+                threshold_execution::tfhe_internals::parameters::NIST_PARAMS_P32_SNS_FGLWE
+            }
+        };
+        let keyset_config = KeySetConfig::default();
+        // +1 spare random: the divergence canary, opened in the sync session.
+        let batch = BatchParams {
+            triples: params_dkg.total_triples_required(keyset_config),
+            randoms: params_dkg.total_randomness_required(keyset_config) + 1,
+        };
+        let chunk = cfg.committee.preproc_chunk.max(1);
+        eprintln!(
+            "celar-kms-node[{}]: secure-LARGE offline phase ({} triples, {} randoms, chunk {})…",
+            cfg.role, batch.triples, batch.randoms, chunk
+        );
+        let mut large_preproc = InMemoryBasePreprocessing::<Poly>::default();
+        let mut left = batch;
+        while left.triples > 0 || left.randoms > 0 {
+            large
+                .network()
+                .set_timeout_for_next_round(Duration::from_secs(cfg.round_timeout_secs))
+                .await;
+            let step = BatchParams {
+                triples: left.triples.min(chunk),
+                randoms: left.randoms.min(chunk),
+            };
+            let mut chunk_out = SecureLargePreprocessing::default()
+                .execute(&mut large, step)
+                .await
+                .map_err(|e| anyhow::anyhow!("secure large offline phase failed: {e:?}"))?;
+            large_preproc.append_triples(
+                chunk_out
+                    .next_triple_vec(step.triples)
+                    .map_err(|e| anyhow::anyhow!("draining chunk triples: {e:?}"))?,
+            );
+            large_preproc.append_randoms(
+                chunk_out
+                    .next_random_vec(step.randoms)
+                    .map_err(|e| anyhow::anyhow!("draining chunk randoms: {e:?}"))?,
+            );
+            left.triples -= step.triples;
+            left.randoms -= step.randoms;
+        }
+
+        // CANARY (sync/offline) — same divergence bisection as the PRSS path.
+        {
+            let canary_share =
+                RandomPreprocessing::<Poly>::next_random_vec(&mut large_preproc, 1)
+                    .map_err(|e| anyhow::anyhow!("canary draw: {e:?}"))?
+                    .pop()
+                    .context("canary: empty draw")?;
+            let opened = SecureRobustOpen::default()
+                .robust_open_to_all(
+                    &large,
+                    canary_share.value(),
+                    cfg.committee.session_threshold(),
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("canary open: {e:?}"))?
+                .context("canary: no reconstruction")?;
+            eprintln!(
+                "celar-kms-node[{}]: CANARY-A (sync/offline, large) {}",
+                cfg.role,
+                &sha256_hex(format!("{opened:?}").as_bytes())[..16],
+            );
+        }
+
+        let mut dkg_preproc = create_memory_factory().create_dkg_preprocessing_with_sns();
+        dkg_preproc
+            .fill_from_base_preproc(
+                params_dkg,
+                keyset_config,
+                large.get_mut_base_session(),
+                &mut large_preproc,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("filling DKG preprocessing failed: {e:?}"))?;
+
+        // ONLINE KEYGEN — fresh ASYNC session (same H2 doctrine as the PRSS
+        // path; see that arm's comment). Plain BaseSession: no PRSS state
+        // exists or is needed on the large path.
+        let sid_online = SessionId::from(cfg.session_id as u128 + 1);
+        let networking_online = manager
+            .make_network_session(sid_online, &assignment, my_role, NetworkMode::Async)
+            .await
+            .context("creating the online (async) network session")?;
+        let params_online = SessionParameters::new(
+            cfg.committee.session_threshold() as u8,
+            sid_online,
+            my_role,
+            role_set.clone(),
+        )
+        .map_err(|e| anyhow::anyhow!("online session parameters: {e:?}"))?;
+        let mut base_online =
+            BaseSession::new(params_online, networking_online, AesRng::from_random_seed())
+                .map_err(|e| anyhow::anyhow!("online base session: {e:?}"))?;
+
+        eprintln!(
+            "celar-kms-node[{}]: distributed keygen (async session, large path)…",
+            cfg.role
+        );
+        let mut tag = tfhe::Tag::default();
+        tag.set_data(cfg.committee.tag.as_bytes());
+        let (compressed_pk, sk) =
+            SecureOnlineDistributedKeyGen128::<EXTENSION_DEGREE>::compressed_keygen(
+                &mut base_online,
+                dkg_preproc.as_mut(),
+                params_dkg,
+                tag,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("distributed keygen failed: {e:?}"))?;
+
+        let mut corrupt = large.get_mut_base_session().corrupt_roles().clone();
+        corrupt.extend(base_online.corrupt_roles().iter().cloned());
+        if corrupt.is_empty() {
+            eprintln!("celar-kms-node[{}]: corrupt set EMPTY — clean run", cfg.role);
+        } else {
+            eprintln!(
+                "celar-kms-node[{}]: ⚠ corrupt set NOT empty: {:?} — this run's \
+                 pk_G will disagree across parties; abort and retry the ceremony",
+                cfg.role, corrupt
+            );
+        }
+        (compressed_pk, sk)
+    } else {
+
     // 4) PRSS init — interactive, one-time for this ceremony epoch.
     base.network()
         .set_timeout_for_next_round(Duration::from_secs(cfg.round_timeout_secs))
@@ -550,6 +694,9 @@ pub async fn run_ceremony(cfg: &NodeConfig) -> Result<TranscriptFragment> {
             cfg.role, corrupt
         );
     }
+
+        (compressed_pk, sk)
+    };
 
     let wall_secs = started.elapsed().as_secs_f64();
 
