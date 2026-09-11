@@ -382,6 +382,14 @@ pub async fn run_ceremony(cfg: &NodeConfig) -> Result<TranscriptFragment> {
         Server::builder()
             .tls_config(server_tls_cfg)?
             .http2_adaptive_window(Some(true))
+            // Match the client-side keepalive: ping idle peer connections and
+            // keep the TCP flow alive so a quiet stretch during the offline
+            // phase does not get the connection reaped (a reaped connection then
+            // fails to re-establish and the peer is wrongly evicted, which at
+            // genesis threshold has no margin and cascades to a whole-session abort).
+            .http2_keepalive_interval(Some(Duration::from_secs(20)))
+            .http2_keepalive_timeout(Some(Duration::from_secs(10)))
+            .tcp_keepalive(Some(Duration::from_secs(20)))
             .add_service(mpc_service)
             .serve(bind.parse().context("parsing bind address")?),
     );
