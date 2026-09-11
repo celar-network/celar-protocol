@@ -244,6 +244,8 @@ async fn main() -> Result<()> {
                     out_dir: out_dir.clone(),
                     write_dev_keys,
                     roster: roster.clone(),
+                    // Absent → committee-scale transport defaults at run time.
+                    net: None,
                 };
                 let path = out_dir.join(format!("node_{i:03}.json"));
                 fs::write(&path, serde_json::to_string_pretty(&cfg)?)?;

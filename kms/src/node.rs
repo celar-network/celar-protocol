@@ -132,6 +132,18 @@ pub struct NodeConfig {
     /// roster digest into its transcript fragment.
     #[serde(default)]
     pub roster: Option<PathBuf>,
+    /// Core-to-core transport tuning. Absent = committee-scale defaults (see
+    /// `committee_net_config`). The upstream transport defaults are calibrated
+    /// for a 5-party committee; at larger sizes over a long offline phase,
+    /// seats drift apart under load and the default buffers/retry-windows drop
+    /// the laggard's messages. A dropped message in a reliable-broadcast round
+    /// is indistinguishable from the sender equivocating, so the (honest)
+    /// sender is permanently evicted from the committee — which shrinks the
+    /// honest pool and cascades to collapse. This block widens every knob on
+    /// that drop path; it is serialised so operators can re-tune per run
+    /// without rebuilding.
+    #[serde(default)]
+    pub net: Option<threshold_networking::grpc::CoreToCoreNetworkConfig>,
 }
 
 fn default_listen() -> String {
@@ -145,6 +157,35 @@ fn default_round_timeout() -> u64 {
 }
 fn default_startup_wait() -> u64 {
     5
+}
+
+/// Core-to-core transport tuning for committee-scale ceremonies. The upstream
+/// defaults are sized for 5 parties (their timeouts are annotated "tested for
+/// (5,1)"); at genesis scale, seats on busier hosts fall behind over the long
+/// offline phase and these default limits silently drop their messages, which
+/// the reliable broadcast then reads as corruption and evicts the honest
+/// party — cascading to a whole-session abort. Every value here sits on that
+/// drop path and is widened with headroom (buffers ~30-60x, retry/enqueue
+/// windows to 10 min) while staying bounded so a peer cannot force unbounded
+/// memory. Used whenever the node config omits an explicit `net` block.
+fn committee_net_config() -> threshold_networking::grpc::CoreToCoreNetworkConfig {
+    threshold_networking::grpc::CoreToCoreNetworkConfig {
+        // Incoming per-peer queue depth (default 70): 29 peers can burst while
+        // a seat is mid-compute; a shallow queue overflows and drops.
+        message_limit: Some(2048),
+        // Retry budget before a failing send is abandoned (default 60s).
+        max_elapsed_time: Some(600),
+        // How long a send waits to enqueue before dropping (default 60s).
+        max_waiting_time_for_message_queue: Some(600),
+        // Default per-round receive wait (we also set 600s per round explicitly).
+        network_timeout: Some(600),
+        // Look-ahead for a peer ahead of us, and the hard cap on buffered
+        // future messages (default 32): both must exceed the round-drift that
+        // develops across hosts of differing seat counts.
+        max_future_rounds: Some(2048),
+        max_buffered_future_msgs: Some(2048),
+        ..Default::default()
+    }
 }
 
 impl NodeConfig {
@@ -183,6 +224,12 @@ impl NodeConfig {
             .iter()
             .find(|p| p.role == self.role)
             .expect("validated: role in peers")
+    }
+
+    /// The core-to-core transport tuning to run under: the config's explicit
+    /// `net` block if present, else the committee-scale defaults.
+    fn net_config(&self) -> threshold_networking::grpc::CoreToCoreNetworkConfig {
+        self.net.unwrap_or_else(committee_net_config)
     }
 }
 
@@ -325,7 +372,7 @@ pub async fn run_ceremony(cfg: &NodeConfig) -> Result<TranscriptFragment> {
     let client_tls = build_client_tls(&cfg.tls)?;
     let manager = Arc::new(GrpcNetworkingManager::new(
         Some(client_tls),
-        threshold_networking::grpc::CoreToCoreNetworkConfig::default(),
+        cfg.net_config(),
     )?);
     let mpc_service = manager.new_server(TlsExtensionGetter::TlsConnectInfo);
 
