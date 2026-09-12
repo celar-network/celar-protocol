@@ -132,6 +132,13 @@ pub struct NodeConfig {
     /// roster digest into its transcript fragment.
     #[serde(default)]
     pub roster: Option<PathBuf>,
+    /// Path to this seat's ed25519 OPERATIONAL signing key (the private half of
+    /// its roster-registered `signing_pubkey`, as emitted by `celar-certs`).
+    /// When set, the node signs its transcript endorsement digest so the
+    /// fragment carries a quorum-checkable seat endorsement. Absent = the
+    /// fragment is written unsigned (dev).
+    #[serde(default)]
+    pub signing_key: Option<PathBuf>,
     /// Core-to-core transport tuning. Absent = committee-scale defaults (see
     /// `committee_net_config`). The upstream transport defaults are calibrated
     /// for a 5-party committee; at larger sizes over a long offline phase,
@@ -252,12 +259,135 @@ pub struct TranscriptFragment {
     /// Digest of the roster this node ran under (None = dev, rosterless).
     #[serde(default)]
     pub roster_sha256: Option<String>,
+    /// This seat's ed25519 signature (hex) over `endorsement_digest()`, made
+    /// with the operational key its roster entry registered. It supplies the
+    /// AUTHORSHIP a bare hash chain cannot: a submission carrying
+    /// reconstruction-quorum-many valid endorsements proves the rostered
+    /// committee endorsed this transcript. None = the seat had no signing key
+    /// configured (unsigned dev fragment).
+    #[serde(default)]
+    pub endorsement: Option<String>,
 }
 
-pub const FRAGMENT_SCHEMA: &str = "celar-dkg-fragment/v0";
+/// Domain separator for the endorsement digest. Bump only if the signed field
+/// set changes — a signature is over the digest, and the digest over these.
+pub const ENDORSEMENT_DOMAIN: &str = "celar-transcript-endorsement/v1";
+
+impl TranscriptFragment {
+    /// The canonical digest every honest seat computes IDENTICALLY and signs.
+    /// It covers only the COMMON epoch fields — committee size, session, params,
+    /// tag, pk_G, roster — and deliberately excludes the per-seat share
+    /// commitment, wall time, transport, and the signature itself, so a quorum
+    /// of signatures is over one shared value. Serialised as a JSON tuple so
+    /// the `tag` field cannot inject a delimiter.
+    ///
+    /// This is the INTERFACE the on-chain write path must mirror to verify
+    /// these signatures — keep the two definitions in lockstep.
+    pub fn endorsement_digest(&self) -> String {
+        let canonical = serde_json::to_string(&(
+            ENDORSEMENT_DOMAIN,
+            self.committee_parties,
+            self.session_id,
+            self.params.as_str(),
+            self.tag.as_str(),
+            self.pk_g_sha256.as_str(),
+            self.roster_sha256.as_deref(),
+        ))
+        .expect("tuple of primitives always serializes");
+        sha256_hex(canonical.as_bytes())
+    }
+}
+
+pub const FRAGMENT_SCHEMA: &str = "celar-dkg-fragment/v1";
 
 pub fn fragment_file(role: usize) -> String {
     format!("fragment_{role:03}.json")
+}
+
+/// Sign an endorsement digest (hex) with the seat's ed25519 operational key
+/// (a 64-hex file, as `celar-certs` writes). Returns the signature as 128-hex.
+/// The signed message is the digest's hex bytes; the verifier recomputes the
+/// same digest and checks the signature against the roster's registered key.
+fn sign_endorsement(key_path: &Path, digest_hex: &str) -> Result<String> {
+    use ed25519_dalek::{Signer, SigningKey};
+    let raw = fs::read_to_string(key_path)
+        .with_context(|| format!("reading operational signing key {}", key_path.display()))?;
+    let bytes = hex::decode(raw.trim()).context("operational signing key is not hex")?;
+    let arr: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("operational signing key is not 32 bytes"))?;
+    let sk = SigningKey::from_bytes(&arr);
+    Ok(hex::encode(sk.sign(digest_hex.as_bytes()).to_bytes()))
+}
+
+/// Verify that a set of transcript fragments carries a **reconstruction quorum**
+/// of valid seat endorsements over ONE transcript — the authorship check a
+/// bare hash chain cannot supply (structural checks constrain the bytes; this
+/// checks who signed them). Returns the count of distinct valid signers.
+///
+/// It authenticates that the rostered committee's quorum ENDORSES this
+/// transcript — not that the ceremony inside it was honest (a colluding quorum
+/// can still sign a fabricated transcript). That is the trust the §7.7
+/// committee model already carries; it adds no new assumption. This is the
+/// reference verifier; the on-chain write path must mirror it.
+pub fn verify_quorum_endorsement(
+    fragments: &[TranscriptFragment],
+    roster: &crate::committee::CommitteeRoster,
+) -> Result<usize> {
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    if fragments.is_empty() {
+        bail!("no fragments to verify");
+    }
+    // Every fragment must endorse the SAME transcript, else they are not one
+    // committee endorsing one epoch.
+    let digest = fragments[0].endorsement_digest();
+    for f in fragments {
+        if f.endorsement_digest() != digest {
+            bail!(
+                "fragment for role {} endorses a different transcript — the \
+                 fragments do not agree on one transcript",
+                f.role
+            );
+        }
+    }
+    let msg = digest.as_bytes();
+
+    let mut valid_signers = std::collections::HashSet::new();
+    for f in fragments {
+        let Some(sig_hex) = &f.endorsement else {
+            continue; // unsigned fragment contributes no authorship
+        };
+        let Some(member) = roster.members.iter().find(|m| m.role == f.role) else {
+            bail!("fragment role {} is not a member of the roster", f.role);
+        };
+        // A key or signature that does not parse is simply not a valid
+        // endorsement — skip it rather than counting or erroring.
+        let vk = hex::decode(&member.signing_pubkey)
+            .ok()
+            .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok())
+            .and_then(|a| VerifyingKey::from_bytes(&a).ok());
+        let sig = hex::decode(sig_hex)
+            .ok()
+            .and_then(|b| <[u8; 64]>::try_from(b.as_slice()).ok())
+            .map(|a| Signature::from_bytes(&a));
+        if let (Some(vk), Some(sig)) = (vk, sig) {
+            if vk.verify(msg, &sig).is_ok() {
+                valid_signers.insert(f.role);
+            }
+        }
+    }
+
+    let quorum = roster.reconstruction_quorum();
+    let n = valid_signers.len();
+    if n < quorum {
+        bail!(
+            "transcript carries only {n} valid seat endorsement(s); the roster's \
+             reconstruction quorum is {quorum}. The transcript is NOT authenticated \
+             by the committee — structure may check out but authorship does not."
+        );
+    }
+    Ok(n)
 }
 
 // ---------------------------------------------------------------- TLS
@@ -759,7 +889,7 @@ pub async fn run_ceremony(cfg: &NodeConfig) -> Result<TranscriptFragment> {
     // COMPRESSED keyset (see the compressed_keygen comment above).
     let pk_bytes = bincode::serialize(&compressed_pk).context("serializing compressed pk_G")?;
     let sk_bytes = bincode::serialize(&sk).context("serializing share vector")?;
-    let fragment = TranscriptFragment {
+    let mut fragment = TranscriptFragment {
         schema: FRAGMENT_SCHEMA.to_string(),
         role: cfg.role,
         committee_parties: cfg.committee.parties,
@@ -771,7 +901,22 @@ pub async fn run_ceremony(cfg: &NodeConfig) -> Result<TranscriptFragment> {
         wall_secs,
         transport: "grpc-mtls".to_string(),
         roster_sha256,
+        endorsement: None,
     };
+    // Endorse: sign the canonical transcript digest with this seat's
+    // operational key so the archived epoch carries a quorum-checkable
+    // authorship signal.
+    match &cfg.signing_key {
+        Some(key_path) => {
+            let digest = fragment.endorsement_digest();
+            fragment.endorsement = Some(sign_endorsement(key_path, &digest)?);
+            eprintln!("celar-kms-node[{}]: transcript endorsement signed", cfg.role);
+        }
+        None => eprintln!(
+            "celar-kms-node[{}]: ⚠ no operational signing key — fragment is UNSIGNED",
+            cfg.role
+        ),
+    }
     fs::write(
         cfg.out_dir.join(fragment_file(cfg.role)),
         serde_json::to_string_pretty(&fragment)?,
@@ -817,4 +962,130 @@ pub async fn run_ceremony(cfg: &NodeConfig) -> Result<TranscriptFragment> {
     );
     let _ = server_handle.await;
     Ok(fragment)
+}
+
+#[cfg(test)]
+mod endorsement_tests {
+    use super::*;
+    use crate::committee::{CommitteeMode, CommitteeRoster, RosterMember, ROSTER_SCHEMA};
+    use crate::config::ParamsChoice;
+    use crate::transcript::sha256_hex;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    /// A dev roster of `c` seats plus the matching signing keys (role-indexed),
+    /// so a test can produce genuine seat endorsements. c=8 ⇒ quorum = 7.
+    fn roster_with_keys(c: usize) -> (CommitteeRoster, Vec<SigningKey>) {
+        let mut members = Vec::new();
+        let mut keys = Vec::new();
+        for role in 1..=c {
+            let mut seed = [0u8; 32];
+            seed[0] = role as u8;
+            seed[1] = (role >> 8) as u8;
+            let sk = SigningKey::from_bytes(&seed);
+            members.push(RosterMember {
+                role,
+                org: format!("org-{role}"),
+                jurisdiction: None,
+                host: format!("h{role}"),
+                port: 51000 + role as u16,
+                mpc_identity: format!("id{role}"),
+                ca_cert_sha256: sha256_hex(format!("ca{role}").as_bytes()),
+                signing_pubkey: hex::encode(sk.verifying_key().to_bytes()),
+            });
+            keys.push(sk);
+        }
+        let roster = CommitteeRoster {
+            schema: ROSTER_SCHEMA.into(),
+            mode: CommitteeMode::Dev,
+            tag: "t".into(),
+            params: ParamsChoice::Test,
+            members,
+        };
+        (roster, keys)
+    }
+
+    /// A fragment over one fixed transcript (only `role` and `endorsement`
+    /// vary), so every seat's `endorsement_digest()` is identical.
+    fn base_fragment(role: usize) -> TranscriptFragment {
+        TranscriptFragment {
+            schema: FRAGMENT_SCHEMA.into(),
+            role,
+            committee_parties: 8,
+            session_id: 1,
+            params: "PARAMS_TEST_BK_SNS".into(),
+            tag: "t".into(),
+            pk_g_sha256: "aa".repeat(32),
+            share_commitment_sha256: format!("{:02x}", role).repeat(32),
+            wall_secs: 1.0,
+            transport: "test".into(),
+            roster_sha256: Some("cc".repeat(32)),
+            endorsement: None,
+        }
+    }
+
+    fn signed_by(role: usize, sk: &SigningKey) -> TranscriptFragment {
+        let mut f = base_fragment(role);
+        let d = f.endorsement_digest();
+        f.endorsement = Some(hex::encode(sk.sign(d.as_bytes()).to_bytes()));
+        f
+    }
+
+    #[test]
+    fn a_quorum_of_real_endorsements_verifies() {
+        let (roster, keys) = roster_with_keys(8); // quorum 7
+        let frags: Vec<_> = (1..=8).map(|r| signed_by(r, &keys[r - 1])).collect();
+        assert_eq!(verify_quorum_endorsement(&frags, &roster).unwrap(), 8);
+    }
+
+    #[test]
+    fn a_forged_submission_without_endorsements_is_rejected() {
+        // The attacker composes arbitrary transcript content that passes the
+        // structural checks but carries NO real seat signatures. Authorship is
+        // absent, so it must not reach a quorum.
+        let (roster, _keys) = roster_with_keys(8);
+        let frags: Vec<_> = (1..=8).map(base_fragment).collect(); // all unsigned
+        assert!(
+            verify_quorum_endorsement(&frags, &roster).is_err(),
+            "an unsigned/forged submission must never authenticate"
+        );
+    }
+
+    #[test]
+    fn a_sub_quorum_of_endorsements_is_rejected() {
+        let (roster, keys) = roster_with_keys(8); // quorum 7
+        let frags: Vec<_> = (1..=6).map(|r| signed_by(r, &keys[r - 1])).collect();
+        assert!(verify_quorum_endorsement(&frags, &roster).is_err());
+    }
+
+    #[test]
+    fn a_signature_from_the_wrong_key_does_not_count() {
+        let (roster, keys) = roster_with_keys(8); // quorum 7
+        // Six genuine endorsements, plus role 7 presenting a signature made
+        // with role 1's key — it verifies against member 1, not member 7, so it
+        // must not count toward role 7. Result: 6 valid < quorum 7 → rejected.
+        let mut frags: Vec<_> = (1..=6).map(|r| signed_by(r, &keys[r - 1])).collect();
+        let mut forged = base_fragment(7);
+        let d = forged.endorsement_digest();
+        forged.endorsement = Some(hex::encode(keys[0].sign(d.as_bytes()).to_bytes()));
+        frags.push(forged);
+        assert!(
+            verify_quorum_endorsement(&frags, &roster).is_err(),
+            "a signature under the wrong seat's key must not count"
+        );
+    }
+
+    #[test]
+    fn endorsement_digest_ignores_per_seat_fields() {
+        // Two seats differ only in the per-seat share commitment; their
+        // endorsement digests must match so a quorum signs one value.
+        let mut a = base_fragment(1);
+        let mut b = base_fragment(2);
+        a.share_commitment_sha256 = "11".repeat(32);
+        b.share_commitment_sha256 = "22".repeat(32);
+        assert_eq!(a.endorsement_digest(), b.endorsement_digest());
+        // …but a different pk_G is a different transcript.
+        let mut c = base_fragment(1);
+        c.pk_g_sha256 = "dd".repeat(32);
+        assert_ne!(a.endorsement_digest(), c.endorsement_digest());
+    }
 }

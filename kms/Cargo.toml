@@ -67,6 +67,11 @@ aes-prng = "=0.2.1"
 # satisfies the `Rng + CryptoRng` bound on ShamirSharings::share — a different
 # rand major would be a second, incompatible trait set. Used by mask_supply.
 rand = "=0.8.6"
+# Ed25519 operational signing keys: each roster seat registers a signing
+# pubkey and signs ceremony/reshare transcript digests, so an archived epoch
+# carries reconstruction-quorum-many seat endorsements (the authorship a bare
+# hash chain lacks). 2.x uses rand_core 0.6, matching rand 0.8.6's OsRng.
+ed25519-dalek = { version = "2", features = ["rand_core"] }
 
 anyhow = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

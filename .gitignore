@@ -46,7 +46,7 @@ target/
 # private keys. See kms/ceremony/DEV-KEYS-WARNING.txt)
 # (crate flattened 2026-08-16: kms/celar-kms/ → kms/)
 kms/ceremony*/
-kms/certs/
+kms/certs*/
 kms/epoch*/
 dkg-out/
 epoch-out/
@@ -56,6 +56,9 @@ epoch-out/
 kms/roster.json
 *.share.bin
 key_*.pem
+# Ed25519 operational signing PRIVATE keys from celar-certs (the .pub is safe,
+# but the .key is seat-only secret material — never commit or distribute).
+signing_*.key
 
 # Local working copy of a doc-repo file; canonical version lives in
 # doc/engg/celar-onboarding-track-b.md
