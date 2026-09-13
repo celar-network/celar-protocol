@@ -17,7 +17,7 @@ use clap::{Parser, Subcommand};
 
 use celar_kms::config::CommitteeConfig;
 use celar_kms::node::{
-    fragment_file, run_ceremony, NodeConfig, PeerEntry, TlsPaths, TranscriptFragment,
+    run_ceremony, NodeConfig, PeerEntry, TlsPaths, TranscriptFragment,
     FRAGMENT_SCHEMA,
 };
 use celar_kms::transcript::{PartyRecord, Transcript};
@@ -259,14 +259,11 @@ async fn main() -> Result<()> {
         }
         Cmd::Run { config } => {
             let cfg = NodeConfig::load(&config)?;
-            let fragment = run_ceremony(&cfg).await?;
-            println!(
-                "CEREMONY-OK role={} wall={:.1}s pk_G {} fragment {}",
-                fragment.role,
-                fragment.wall_secs,
-                fragment.pk_g_sha256,
-                cfg.out_dir.join(fragment_file(fragment.role)).display(),
-            );
+            // run_ceremony writes the fragment, prints CEREMONY-OK, then keeps
+            // the node serving until the process is stopped — peers may still
+            // need it to finish the online keygen. It returns only if the
+            // server task ends on its own (it normally does not).
+            run_ceremony(&cfg).await?;
             Ok(())
         }
         Cmd::Collect { dir } => {

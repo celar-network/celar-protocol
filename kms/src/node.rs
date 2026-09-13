@@ -794,6 +794,27 @@ pub async fn run_ceremony(cfg: &NodeConfig) -> Result<TranscriptFragment> {
         )?;
     }
 
-    server_handle.abort(); // ceremony done; this daemon's one job is complete
+    // Announce completion BEFORE blocking: the fragment is written and this
+    // seat holds its share. This line is the collectable success signal.
+    println!(
+        "CEREMONY-OK role={} wall={:.1}s pk_G {} fragment {}",
+        fragment.role,
+        fragment.wall_secs,
+        fragment.pk_g_sha256,
+        cfg.out_dir.join(fragment_file(fragment.role)).display(),
+    );
+    // Do NOT exit yet. The online keygen needs every peer reachable until the
+    // LAST seat finishes; a seat that aborts its server the instant it
+    // completes drops connections that slower peers still need, and at
+    // committee scale that cascades — fast finishers leave, laggards get
+    // connection-refused on their final-round sends and never complete. Keep
+    // serving until the operator stops this process, which should be only
+    // after all fragments have been collected.
+    eprintln!(
+        "celar-kms-node[{}]: fragment written; STAYING UP to serve peers — \
+         stop this process only after all fragments are collected.",
+        cfg.role
+    );
+    let _ = server_handle.await;
     Ok(fragment)
 }
