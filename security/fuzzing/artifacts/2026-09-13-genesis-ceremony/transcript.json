@@ -1,0 +1,151 @@
+{
+  "schema": "celar-dkg-transcript/v0",
+  "mode": "genesis-grpc-mtls-secure-small-preproc",
+  "upstream": {
+    "repo": "https://github.com/celar-network/kms",
+    "tag": "celar/statsec-tuniform-50@b79e997daf39f2b8b05575093a8e76e706526b84"
+  },
+  "committee": {
+    "parties": 30,
+    "reconstruction_quorum": 23,
+    "session_threshold": 9,
+    "genesis_scale": true
+  },
+  "dkg": {
+    "params": "PARAMS_TEST_BK_SNS",
+    "tag": "celar-genesis-dev",
+    "session_id": 1,
+    "preprocessing": "secure-small",
+    "preproc_seed": 42,
+    "wall_secs": 27755.3
+  },
+  "pk_g_sha256": "6a37986ba16abfd3c57bfd55e55963922346fbafe2b24c70ba28e999ed7c5592",
+  "roster_sha256": "e4133c79571fa92996b0ef439cf51a5b92bac9d93878fecc9ae80805c6bfdda4",
+  "parties": [
+    {
+      "role": 1,
+      "share_commitment_sha256": "b3ee1abe2f09cc9be856bc85a7113b31c28e1c8dc9023a2c26ff2c98723409d6"
+    },
+    {
+      "role": 2,
+      "share_commitment_sha256": "3dd1714deed3150b8e780be57486dc9141a590f85f3a820873d2f4c8e4eeee38"
+    },
+    {
+      "role": 3,
+      "share_commitment_sha256": "01da116a1498cbe0ab29e0d67f600f57c1ec262ef0d9bd05a263d81d4e1aa609"
+    },
+    {
+      "role": 4,
+      "share_commitment_sha256": "36434852b021991de1d8b2d8b7b9cdd53e8370be33cee7ec0a5efb9f8535faa0"
+    },
+    {
+      "role": 5,
+      "share_commitment_sha256": "fdf3ee857a91fc75cbfa762aecc4b8fe421e70efecd875d035070c873a6e2633"
+    },
+    {
+      "role": 6,
+      "share_commitment_sha256": "77cc91fc4cb48d08c164ea9a0689ab3ed2d512d8812d46bc02a5d48e477b2486"
+    },
+    {
+      "role": 7,
+      "share_commitment_sha256": "18cab46741be8f354bc6b046793128c80ce0a2f6a929c55ed4395265bbbe4879"
+    },
+    {
+      "role": 8,
+      "share_commitment_sha256": "05b3bcc1f9a9624ca7ddfec5f96ffdabb18830b82d1a455807ff0061b85eac76"
+    },
+    {
+      "role": 9,
+      "share_commitment_sha256": "b2bcc358f8411efcefc20fd90022e0ca66d0c6d0c02299deb128314d50a2b604"
+    },
+    {
+      "role": 10,
+      "share_commitment_sha256": "830d40839581168fe0a00d02c451ec4a970be97362c93ad462fa08e7be474a0e"
+    },
+    {
+      "role": 11,
+      "share_commitment_sha256": "199122e2a21d1bbcd9566a427508fc33e27b00d1ef83c0007ce3ec174b814e2b"
+    },
+    {
+      "role": 12,
+      "share_commitment_sha256": "8368009796f43234bf6cf169f8ba9e1d4e4ad5f73b178908ed2dad0b530b8ffc"
+    },
+    {
+      "role": 13,
+      "share_commitment_sha256": "1ea77580011654eff37fbd1bca83fa209c30797636dc20543838cb808c081385"
+    },
+    {
+      "role": 14,
+      "share_commitment_sha256": "9fcce807ea6dc5bb299004723072fcf0441947dc7846ddc337a81ce976fcaa59"
+    },
+    {
+      "role": 15,
+      "share_commitment_sha256": "6fa4c0f6321560ec91d0ab2c263ed1ff954647cc1818a407d60685e4a956e9d6"
+    },
+    {
+      "role": 16,
+      "share_commitment_sha256": "fc625f4dd4c7a56a81990d2220481a0538c959dca007fb828807d97b73b1d5ad"
+    },
+    {
+      "role": 17,
+      "share_commitment_sha256": "b45b0321458c733f3d12d1ad55566b89a6c2d50a66e67b179d2b7a08cdfad2ce"
+    },
+    {
+      "role": 18,
+      "share_commitment_sha256": "f944d5a3620abc44ecc98e6dc0c3dd57f9c7cd3c30c9692e531172485c661aba"
+    },
+    {
+      "role": 19,
+      "share_commitment_sha256": "a5005c9aa37c733c809cf85a52b8f59956eee961f7ecb17fc69906fd76a82e67"
+    },
+    {
+      "role": 20,
+      "share_commitment_sha256": "98d8cf548947525d131d9143daee71f6f5c972dd85d245a3dd5527a741761599"
+    },
+    {
+      "role": 21,
+      "share_commitment_sha256": "d36dbfba23477d970cd846d42ecc981a5962061ae6ecd0ab28776c6618bf0ff0"
+    },
+    {
+      "role": 22,
+      "share_commitment_sha256": "8bba6058c71cb76d09b2ab7706af4aec34f3afcba525c4f13ac8a84804bf02d1"
+    },
+    {
+      "role": 23,
+      "share_commitment_sha256": "062ef34bf23bb103c01aaa8735de204d9dbb8afb2c09108fa08c132490344203"
+    },
+    {
+      "role": 24,
+      "share_commitment_sha256": "b3bdbe335234fddb3b07c13b315821493e00300fabe98267477cb569012736ce"
+    },
+    {
+      "role": 25,
+      "share_commitment_sha256": "b52912ab3e431eb3dfedc020b796d9aeced2005c8a45feffa7488e0ff36f4ac7"
+    },
+    {
+      "role": 26,
+      "share_commitment_sha256": "76727a6505d06cc0146d06b06567582d561a3d0f195715ea394a4d5bdce65e8c"
+    },
+    {
+      "role": 27,
+      "share_commitment_sha256": "a52743df7cfdd5a619e810c04ae5ed82d9a8dc411dfd88750dbcbecb34b23e2e"
+    },
+    {
+      "role": 28,
+      "share_commitment_sha256": "4c1527d6b425a1a99ae22c4e136dbdb432e780e3bffe3179b45a192f9ec69554"
+    },
+    {
+      "role": 29,
+      "share_commitment_sha256": "7f63578897112cf5ddfcfcbc2445d6f897a20074985b10d7efe57f5836b0b7a7"
+    },
+    {
+      "role": 30,
+      "share_commitment_sha256": "82d84ecd341550e72efbe912114fec7103e0a748b50ab6bd4ed168a443bbdbba"
+    }
+  ],
+  "environment": {
+    "os": "linux",
+    "arch": "x86_64",
+    "created_unix": 1789357201
+  }
+}
