@@ -119,6 +119,33 @@ pub const MAX_SAFE_LAMBDA_STAT: u32 = 52;
 /// bits above.
 pub const LOG_B_EVAL: u32 = 68;
 
+/// The degree-decoupled system's flooding parameter.
+///
+/// The decoupled mask is not one joint preprocessing mask but a SUM of
+/// [`DECOUPLED_CONTRIBUTIONS`] locally-sampled terms, so its worst-case width is
+/// log₂(79) ≈ 6.3 bits above a single source. The decryption-margin derivation
+/// is the deployed one plus that overhead:
+///   2^(LOG_B_EVAL + λ + 1 + 6.3) + 2^LOG_B_EVAL < 2^122  ⟺  λ ≤ 46
+/// (at λ=46 the sum is ≈2^121.3, inside with ~0.7 bit; λ=47 fails).
+///
+/// The switch-and-squash tightening (LOG_B_SWITCH_SQUASH 70→68) is a property of
+/// the ENGINE, not of the mask construction, so it carries here too: the
+/// decoupled system gets the same +2 bits the deployed one did (44→46, hence
+/// Q_max 16→64 at λ_target=40). What must NOT carry is the constant 52 itself —
+/// 2^(68+52+1+6.3) ≈ 2^127.3 ≫ 2^122 would corrupt silently. 52 is the
+/// single-source ceiling; 46 is the 79-source ceiling under the same bound.
+pub const DECOUPLED_FLOODING_STATSEC: u32 = 46;
+
+/// Hard λ_stat ceiling for the decoupled mask width — the analogue of
+/// [`MAX_SAFE_LAMBDA_STAT`] for the wider (79-sum) mask. Equal to the deployed
+/// decoupled parameter: there is no headroom above it (λ=47 fails the margin).
+pub const MAX_SAFE_LAMBDA_STAT_DECOUPLED: u32 = 46;
+
+/// Contributions summed into the decoupled mask (the 79-of-100 construction).
+/// Named so the ≈6.3-bit width overhead in the derivation above is traceable,
+/// not a magic number.
+pub const DECOUPLED_CONTRIBUTIONS: u32 = 79;
+
 /// log₂ of the flooding-mask sampling bound on the production (large-session
 /// TUniform) path: each flooding term is drawn from a range of half-width
 /// 2^(LOG_B_EVAL + λ_stat) = 2^120.
@@ -156,6 +183,49 @@ pub const LOG_FLOODING_MASK_LOWER_BOUND: u32 =
 /// Spec default sub-budget divisor: "Q_max/64 per contract per epoch".
 pub const SUB_BUDGET_DIVISOR: u64 = 64;
 
+/// Which flooding-mask construction a budget is backed by. The decryption
+/// margin (Δ/2 = 2^122) caps λ_stat, and the cap depends on the aggregate mask
+/// WIDTH, which differs by construction — same engine (LOG_B_EVAL is an engine
+/// property), different mask width, different admissible λ_stat and hence Q_max.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum MaskConstruction {
+    /// The deployed single-source mask: one joint preprocessing mask, width
+    /// 2^(LOG_B_EVAL + λ_stat + 1). Admits λ_stat ≤ 52 (Q_max ≤ 4096).
+    #[default]
+    SingleSource,
+    /// The degree-decoupled mask: a sum of [`DECOUPLED_CONTRIBUTIONS`]
+    /// locally-sampled terms, ≈6.3 bits wider, so it admits six fewer bits of
+    /// λ_stat: ≤ 46 (Q_max ≤ 64).
+    Decoupled,
+}
+
+impl MaskConstruction {
+    /// The flooding parameter the production decrypt path provides for this
+    /// construction — the value a budget's `λ_stat` MUST equal.
+    pub const fn deployed_statsec(&self) -> u32 {
+        match self {
+            MaskConstruction::SingleSource => DEPLOYED_FLOODING_STATSEC,
+            MaskConstruction::Decoupled => DECOUPLED_FLOODING_STATSEC,
+        }
+    }
+
+    /// The hard λ_stat ceiling the decryption margin admits for this mask width.
+    pub const fn max_safe_lambda_stat(&self) -> u32 {
+        match self {
+            MaskConstruction::SingleSource => MAX_SAFE_LAMBDA_STAT,
+            MaskConstruction::Decoupled => MAX_SAFE_LAMBDA_STAT_DECOUPLED,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            MaskConstruction::SingleSource => "single-source",
+            MaskConstruction::Decoupled => "decoupled",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct BudgetParams {
     /// Global per-key-epoch budget. ⟦TBD in spec; sized from §14.3⟧ —
@@ -167,6 +237,11 @@ pub struct BudgetParams {
     pub lambda_stat: u32,
     /// Target statistical security (§7.2 fixes 40).
     pub lambda_target: u32,
+    /// The mask construction this budget is backed by (selects the λ_stat the
+    /// flooding provides and the margin cap). Defaults to the deployed
+    /// single-source system so existing configs deserialize unchanged.
+    #[serde(default)]
+    pub construction: MaskConstruction,
 }
 
 impl BudgetParams {
@@ -181,6 +256,22 @@ impl BudgetParams {
             per_contract_max: (q_max / SUB_BUDGET_DIVISOR).max(1),
             lambda_stat: DEPLOYED_FLOODING_STATSEC,
             lambda_target: LAMBDA_TARGET,
+            construction: MaskConstruction::SingleSource,
+        }
+    }
+
+    /// Parameters for the degree-decoupled system: λ_stat = 46, so the
+    /// Q_max ceiling is 2^(46−40) = 64/epoch. The 79-contribution mask is
+    /// ≈6.3 bits wider than a single source and therefore admits six fewer bits
+    /// of λ_stat — carrying the deployed 4096 here would overshoot the
+    /// decryption margin and corrupt (see [`DECOUPLED_FLOODING_STATSEC`]).
+    pub fn decoupled(q_max: u64) -> Self {
+        Self {
+            q_max,
+            per_contract_max: (q_max / SUB_BUDGET_DIVISOR).max(1),
+            lambda_stat: DECOUPLED_FLOODING_STATSEC,
+            lambda_target: LAMBDA_TARGET,
+            construction: MaskConstruction::Decoupled,
         }
     }
 
@@ -199,21 +290,28 @@ impl BudgetParams {
         if self.q_max == 0 {
             bail!("Q_max must be positive");
         }
-        // The λ cross-check: the configured flooding parameter must be the
-        // one the deployed library provides. Refusal, not clamping — a
-        // silently adjusted budget is a budget the operator believes wrongly.
-        if self.lambda_stat != DEPLOYED_FLOODING_STATSEC {
+        // The λ cross-check: the configured flooding parameter must be the one
+        // the deployed decrypt path provides FOR THIS MASK CONSTRUCTION. Refusal,
+        // not clamping — a silently adjusted budget is one the operator believes
+        // wrongly. The provided value differs by construction (52 single-source,
+        // 46 decoupled), because a wider aggregate mask admits fewer λ_stat bits
+        // under the fixed decryption margin: carrying the single-source 52 onto
+        // the 79-contribution decoupled mask overshoots 2^122 and corrupts.
+        let provided = self.construction.deployed_statsec();
+        if self.lambda_stat != provided {
             bail!(
-                "λ_stat ({}) is not the flooding parameter the deployed \
-                 production decrypt path provides ({}). A budget computed \
-                 from a larger λ_stat enforces a ceiling the flooding does \
-                 not back; one computed from a smaller value wastes real \
-                 capacity. Either is a misconfiguration. Note the decryption \
-                 margin caps λ_stat at {} permanently (Δ/2 = 2^122 vs a mask \
-                 of 2^(71+λ_stat)); exceeding it corrupts plaintexts silently.",
+                "λ_stat ({}) is not the flooding parameter the deployed production \
+                 decrypt path provides for the {} mask construction ({}). A budget \
+                 computed from a larger λ_stat enforces a ceiling the flooding does \
+                 not back; one from a smaller value wastes real capacity. The \
+                 decryption margin caps this construction's λ_stat at {} (a wider \
+                 mask admits fewer bits); exceeding it corrupts plaintexts \
+                 silently. In particular the single-source ceiling (52) must not \
+                 be carried onto the decoupled mask.",
                 self.lambda_stat,
-                DEPLOYED_FLOODING_STATSEC,
-                MAX_SAFE_LAMBDA_STAT
+                self.construction.label(),
+                provided,
+                self.construction.max_safe_lambda_stat()
             );
         }
         if self.lambda_stat <= self.lambda_target {
@@ -462,6 +560,60 @@ mod tests {
         over.per_contract_max = 1;
         let err = over.validate().unwrap_err().to_string();
         assert!(err.contains("flooding ceiling"), "{err}");
+    }
+
+    #[test]
+    fn deployed_re_anchor_left_the_single_source_system_intact() {
+        // The construction dimension defaults to single-source, so the deployed
+        // budget is unchanged: still 52 / 4096.
+        let p = BudgetParams::with_q_max(4096);
+        p.validate().unwrap();
+        assert_eq!(p.construction, MaskConstruction::SingleSource);
+        assert_eq!(p.lambda_stat, DEPLOYED_FLOODING_STATSEC);
+        assert_eq!(p.max_admissible_q_max(), 4096);
+    }
+
+    #[test]
+    fn decoupled_budget_is_46_over_64() {
+        // The degree-decoupled system: λ_stat = 46 (79-contribution mask), so the
+        // §7.2 ceiling is 2^(46−40) = 64/epoch. The published decoupled pair.
+        let p = BudgetParams::decoupled(64);
+        p.validate().unwrap();
+        assert_eq!(p.construction, MaskConstruction::Decoupled);
+        assert_eq!(p.lambda_stat, DECOUPLED_FLOODING_STATSEC);
+        assert_eq!(p.max_admissible_q_max(), 64);
+    }
+
+    #[test]
+    fn decoupled_q_max_ceiling_is_64() {
+        // 65/epoch would violate λ_stat ≥ λ_target + log₂(Q_max) at λ_stat = 46.
+        let err = BudgetParams::decoupled(65).validate().unwrap_err().to_string();
+        assert!(err.contains("flooding ceiling"), "{err}");
+    }
+
+    #[test]
+    fn the_single_source_52_must_not_be_carried_onto_the_decoupled_mask() {
+        // Carrying 52 onto the 79-contribution mask overshoots the decryption
+        // margin (2^(68+52+1+6.3) ≈ 2^127.3 ≫ 2^122): silent corruption. It must
+        // be refused as not the parameter the decoupled path provides.
+        let mut p = BudgetParams::decoupled(64);
+        p.lambda_stat = DEPLOYED_FLOODING_STATSEC; // 52 on the decoupled construction
+        let err = p.validate().unwrap_err().to_string();
+        assert!(err.contains("not the flooding parameter"), "{err}");
+        assert!(err.contains("decoupled"), "{err}");
+    }
+
+    #[test]
+    fn decoupled_margin_cap_is_six_bits_below_single_source() {
+        // The wider (79-sum) mask admits exactly six fewer bits of λ_stat under
+        // the same tightened bound: 52 → 46. That six-bit gap is the whole
+        // reason the decoupled Q_max is 64, not 4096.
+        assert_eq!(MAX_SAFE_LAMBDA_STAT_DECOUPLED, 46);
+        assert_eq!(MAX_SAFE_LAMBDA_STAT - MAX_SAFE_LAMBDA_STAT_DECOUPLED, 6);
+        assert_eq!(
+            MaskConstruction::Decoupled.deployed_statsec(),
+            DECOUPLED_FLOODING_STATSEC
+        );
     }
 
     #[test]
