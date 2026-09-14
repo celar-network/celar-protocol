@@ -42,6 +42,10 @@ enum Cmd {
         /// CA cert filename pattern ({i} = role) — the pinned files.
         #[arg(long, default_value = "cert_party{i}.pem")]
         ca_pattern: String,
+        /// Operational signing pubkey filename pattern ({i} = role), as emitted
+        /// by `celar-certs` — the 64-hex ed25519 key registered per seat.
+        #[arg(long, default_value = "signing_party{i}.pub")]
+        signing_pub_pattern: String,
         #[arg(long, default_value = "core1.party{i}")]
         host_pattern: String,
         #[arg(long, default_value_t = 51000)]
@@ -78,6 +82,10 @@ enum Cmd {
         key_pattern: String,
         #[arg(long, default_value = "cert_party{i}.pem")]
         ca_pattern: String,
+        /// Operational signing key filename pattern ({i} = role), as emitted by
+        /// `celar-certs`; each node signs its transcript endorsement with it.
+        #[arg(long, default_value = "signing_party{i}.key")]
+        signing_key_pattern: String,
         #[arg(long, default_value = "ceremony")]
         out_dir: PathBuf,
         #[arg(long, default_value_t = false)]
@@ -119,6 +127,7 @@ async fn main() -> Result<()> {
             parties,
             certs_dir,
             ca_pattern,
+            signing_pub_pattern,
             host_pattern,
             base_port,
             mode,
@@ -139,6 +148,17 @@ async fn main() -> Result<()> {
                     let pin = sha256_hex(&fs::read(&ca_path).with_context(|| {
                         format!("reading CA file {} for pinning", ca_path.display())
                     })?);
+                    let sig_path =
+                        certs_dir.join(signing_pub_pattern.replace("{i}", &i.to_string()));
+                    let signing_pubkey = fs::read_to_string(&sig_path)
+                        .with_context(|| {
+                            format!(
+                                "reading operational signing pubkey {} (run celar-certs first)",
+                                sig_path.display()
+                            )
+                        })?
+                        .trim()
+                        .to_string();
                     let host = host_pattern.replace("{i}", &i.to_string());
                     Ok(RosterMember {
                         role: i,
@@ -148,6 +168,7 @@ async fn main() -> Result<()> {
                         port: base_port + i as u16,
                         mpc_identity: host,
                         ca_cert_sha256: pin,
+                        signing_pubkey,
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
@@ -177,6 +198,7 @@ async fn main() -> Result<()> {
             cert_pattern,
             key_pattern,
             ca_pattern,
+            signing_key_pattern,
             out_dir,
             write_dev_keys,
             roster,
@@ -246,6 +268,9 @@ async fn main() -> Result<()> {
                     roster: roster.clone(),
                     // Absent → committee-scale transport defaults at run time.
                     net: None,
+                    signing_key: Some(
+                        certs_dir.join(signing_key_pattern.replace("{i}", &i.to_string())),
+                    ),
                 };
                 let path = out_dir.join(format!("node_{i:03}.json"));
                 fs::write(&path, serde_json::to_string_pretty(&cfg)?)?;

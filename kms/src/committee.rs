@@ -56,6 +56,13 @@ pub struct RosterMember {
     /// permissioned trust pin. Nodes refuse ceremonies whose trust roots
     /// don't match the roster.
     pub ca_cert_sha256: String,
+    /// Ed25519 operational signing public key (32 bytes, hex). Registered at
+    /// genesis alongside the CA pin and DISTINCT from the TLS identity: it
+    /// signs ceremony/reshare transcript digests so an archived epoch carries
+    /// reconstruction-quorum-many seat endorsements — the authorship a bare
+    /// hash chain cannot supply. The matching private key is held only by the
+    /// seat and never appears in the roster.
+    pub signing_pubkey: String,
 }
 
 /// The vetted committee for one epoch.
@@ -69,7 +76,10 @@ pub struct CommitteeRoster {
     pub members: Vec<RosterMember>,
 }
 
-pub const ROSTER_SCHEMA: &str = "celar-committee-roster/v0";
+// v1 adds the per-seat operational signing pubkey. The bump is load-bearing:
+// the roster digest the ceremony commits to now covers the signing keys, so a
+// v0 and v1 roster over the same members are deliberately different artifacts.
+pub const ROSTER_SCHEMA: &str = "celar-committee-roster/v1";
 
 impl CommitteeRoster {
     pub fn load(path: &Path) -> Result<Self> {
@@ -120,6 +130,7 @@ impl CommitteeRoster {
         let mut idents = std::collections::HashSet::new();
         let mut pins = std::collections::HashSet::new();
         let mut endpoints = std::collections::HashSet::new();
+        let mut signing_keys = std::collections::HashSet::new();
         for m in &self.members {
             if m.org.trim().is_empty() {
                 bail!("member {} has an empty org", m.role);
@@ -136,6 +147,28 @@ impl CommitteeRoster {
                 bail!(
                     "duplicate CA pin for member {} — one CA per member, or a \
                      single compromised CA speaks for several seats",
+                    m.role
+                );
+            }
+            // Operational signing key: 32-byte hex AND a valid ed25519 point,
+            // unique per seat. A malformed or shared key would make the quorum
+            // endorsement it authenticates meaningless.
+            let raw = hex::decode(&m.signing_pubkey).ok().filter(|b| b.len() == 32);
+            let valid = raw
+                .as_deref()
+                .and_then(|b| <[u8; 32]>::try_from(b).ok())
+                .map(|arr| ed25519_dalek::VerifyingKey::from_bytes(&arr).is_ok())
+                .unwrap_or(false);
+            if !valid {
+                bail!(
+                    "member {}: signing_pubkey is not a 32-byte hex ed25519 public key",
+                    m.role
+                );
+            }
+            if !signing_keys.insert(&m.signing_pubkey) {
+                bail!(
+                    "duplicate signing_pubkey for member {} — one operational key \
+                     per seat, or one key speaks for several endorsements",
                     m.role
                 );
             }
@@ -237,6 +270,12 @@ mod tests {
     use super::*;
 
     fn member(role: usize, org: &str) -> RosterMember {
+        // Deterministic, valid, per-role ed25519 key: seed the signing key from
+        // the role so each member's pubkey is a real curve point and unique.
+        let mut seed = [0u8; 32];
+        seed[0] = role as u8;
+        seed[1] = (role >> 8) as u8;
+        let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
         RosterMember {
             role,
             org: org.to_string(),
@@ -245,6 +284,7 @@ mod tests {
             port: 51000 + role as u16,
             mpc_identity: format!("core1.party{role}"),
             ca_cert_sha256: sha256_hex(format!("ca-{role}").as_bytes()),
+            signing_pubkey: hex::encode(sk.verifying_key().to_bytes()),
         }
     }
 
@@ -299,6 +339,26 @@ mod tests {
         let mut r = roster(CommitteeMode::Dev, 4);
         r.members[3].mpc_identity = r.members[0].mpc_identity.clone();
         assert!(r.validate().is_err(), "shared MPC identity must be refused");
+    }
+
+    #[test]
+    fn signing_key_rules() {
+        // A malformed operational key (not 32-byte hex) is refused.
+        let mut r = roster(CommitteeMode::Dev, 4);
+        r.members[1].signing_pubkey = "not-a-valid-hex-key".into();
+        assert!(r.validate().is_err(), "malformed signing key must be refused");
+
+        // A shared operational key is refused — one endorsement key per seat.
+        let mut r = roster(CommitteeMode::Dev, 4);
+        r.members[3].signing_pubkey = r.members[0].signing_pubkey.clone();
+        assert!(r.validate().is_err(), "shared signing key must be refused");
+
+        // The digest is sensitive to the signing key (it is committed).
+        let r1 = roster(CommitteeMode::Dev, 4);
+        let mut r2 = r1.clone();
+        r2.members[0].signing_pubkey = r1.members[1].signing_pubkey.clone();
+        // (now duplicated, so validate would fail — but digest is pre-validation)
+        assert_ne!(r1.digest().unwrap(), r2.digest().unwrap());
     }
 
     #[test]
