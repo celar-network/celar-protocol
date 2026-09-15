@@ -29,6 +29,7 @@ use tfhe::prelude::CiphertextList;
 
 use algebra::base_ring::Z128;
 use algebra::galois_rings::common::ResiduePoly;
+use algebra::sharing::share::Share;
 // (0.13.22 → main: `decryption_non_wasm` is now a PRIVATE module, re-exported
 // wholesale by `endpoints::decryption` — upstream lib.rs says so explicitly.
 // Both groups therefore come from `decryption`.)
@@ -338,6 +339,144 @@ pub async fn run_local_threshold_decrypt(
         wall_secs,
         lambda_stat,
         flooding_params,
+    };
+    fs::write(out_path, serde_json::to_string_pretty(&report)?)?;
+    Ok(DecryptOutput { report })
+}
+
+/// Threshold-decrypt against a DEGREE-DECOUPLED key: the shares in `shares_dir`
+/// were produced by an upward reshare (`celar-dkg upward-reshare`) to a degree
+/// higher than the committee threshold, and reconstruction happens at that
+/// degree via [`crate::degree_decrypt::run_degree_aware_decrypt`] rather than
+/// the upstream session-degree noiseflood combine.
+///
+/// Committee size and degree come from the `upward-reshare.json` transcript
+/// beside the shares; pk_G is invariant across the reshare and is loaded from
+/// the genesis `keys_dir`. Masks are generated locally here (DEV) — a production
+/// run sources them from the distributed mask supply. This is the local/dev
+/// path (small committees, `execute_protocol_small`); the degree-78/~100-seat
+/// scale run rides a rented large-committee ceremony.
+pub async fn run_decoupled_threshold_decrypt(
+    keys_dir: &Path,
+    shares_dir: &Path,
+    value: u64,
+    out_path: &Path,
+) -> Result<DecryptOutput> {
+    // Committee shape from the upward-reshare transcript beside the shares.
+    let rt = crate::reshare::UpwardReshareTranscript::load(
+        &shares_dir.join("upward-reshare.json"),
+    )?;
+    let parties = rt.new_committee_parties;
+    let degree = rt.new_degree;
+
+    // pk_G is invariant across the reshare — from the genesis keys dir.
+    let pk_bytes = fs::read(keys_dir.join(PK_FILE))
+        .context("reading pk_g.bin (dev keys required)")?;
+    let pk: FhePubKeySet = bincode::deserialize(&pk_bytes).context("deserializing pk_G")?;
+
+    // 1) Encrypt + 2) switch-and-squash — identical to the coupled path.
+    tfhe::set_server_key(pk.server_key.clone());
+    let compact = tfhe::CompactCiphertextList::builder(&pk.public_key)
+        .push(value)
+        .build();
+    let expanded = compact.expand().context("expanding compact list")?;
+    let ct: tfhe::FheUint64 = expanded
+        .get(0)
+        .context("compact list slot 0")?
+        .context("slot 0 empty")?;
+    let (radix, _, _, _) = ct.into_raw_parts();
+    let small_ct = RadixOrBoolCiphertext::Radix(radix);
+    let int_server_key: &tfhe::integer::ServerKey = pk.server_key.as_ref();
+    let sns_key = pk
+        .server_key
+        .noise_squashing_key()
+        .context("server key has no noise-squashing key")?;
+    let large_ct = match &small_ct {
+        RadixOrBoolCiphertext::Radix(c) => SnsRadixOrBoolCiphertext::Radix(
+            sns_key
+                .squash_radix_ciphertext_noise(int_server_key, c)
+                .map_err(|e| anyhow::anyhow!("switch-and-squash failed: {e:?}"))?,
+        ),
+        RadixOrBoolCiphertext::Bool(_) => bail!("fixture is a radix ciphertext"),
+    };
+    let large_ct = Arc::new(large_ct);
+    let n_blocks = large_ct.packed_blocks().count();
+
+    // 3) One degree-`degree` flooding mask per block; index each party's shares
+    // by one-based role. DEV: generated here; production sources them from the
+    // distributed mask supply.
+    let mask_batches: Vec<crate::mask_supply::SealedMaskBatch> = (0..n_blocks)
+        .map(|_| crate::mask_supply::build_honest_batch(parties, degree, degree + 1))
+        .collect::<Result<Vec<_>>>()?;
+    let mut mask_by_role: Vec<Vec<Share<ResiduePoly<Z128, EXTENSION_DEGREE>>>> =
+        vec![Vec::with_capacity(n_blocks); parties];
+    for mb in &mask_batches {
+        for share in mb.mask_shares() {
+            mask_by_role[share.owner().one_based() - 1].push(share.clone());
+        }
+    }
+    let mask_by_role = Arc::new(mask_by_role);
+
+    // 4) Distributed degree-aware decrypt at the KEY's degree.
+    let shares_dir_owned = shares_dir.to_path_buf();
+    let started = Instant::now();
+    let mut task = |session: SmallSession<ResiduePoly<Z128, EXTENSION_DEGREE>>,
+                    _info: Option<String>| {
+        let shares_dir = shares_dir_owned.clone();
+        let large_ct = large_ct.clone();
+        let mask_by_role = mask_by_role.clone();
+        async move {
+            let role = session.my_role().one_based();
+            let share_bytes = fs::read(shares_dir.join(share_file(role)))
+                .expect("reading reshared degree-d share");
+            let share: PrivateKeySet<EXTENSION_DEGREE> =
+                bincode::deserialize(&share_bytes).expect("deserializing share");
+            let pt = crate::degree_decrypt::run_degree_aware_decrypt(
+                &session,
+                &share,
+                &mask_by_role[role - 1],
+                &large_ct,
+                degree,
+                SnsDecryptionKeyType::SnsKey,
+            )
+            .await
+            .expect("degree-aware decrypt failed");
+            (role, pt)
+        }
+    };
+    let mut results = execute_protocol_small::<
+        _,
+        _,
+        ResiduePoly<Z128, EXTENSION_DEGREE>,
+        EXTENSION_DEGREE,
+    >(parties, degree as u8, None, NetworkMode::Sync, None, &mut task, None)
+    .await;
+    let wall_secs = started.elapsed().as_secs_f64();
+
+    if results.len() != parties {
+        bail!("only {}/{} parties completed decryption", results.len(), parties);
+    }
+    results.sort_by_key(|(role, _)| *role);
+    for (role, recovered) in &results {
+        if *recovered != value {
+            bail!(
+                "party {} recovered {} ≠ expected {} — WRONG PLAINTEXT",
+                role,
+                recovered,
+                value
+            );
+        }
+    }
+
+    let report = DecryptReport {
+        schema: DECRYPT_SCHEMA.to_string(),
+        mode: format!("DegreeDecoupled (degree {degree}, network open at key degree, DEV masks)"),
+        parties,
+        value_expected: value,
+        recovered: results,
+        wall_secs,
+        lambda_stat: "46 (decoupled 79-contribution mask ceiling; see budget.rs)",
+        flooding_params: "degree-d sealed mask + network robust-open at the key's degree",
     };
     fs::write(out_path, serde_json::to_string_pretty(&report)?)?;
     Ok(DecryptOutput { report })
