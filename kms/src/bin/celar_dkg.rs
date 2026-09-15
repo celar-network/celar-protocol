@@ -124,6 +124,20 @@ enum Cmd {
         #[arg(long, default_value = "decrypt-report.json")]
         out: PathBuf,
     },
+    /// Threshold-decrypt against an upward-reshared (degree-DECOUPLED) key:
+    /// reconstruction happens at the key's degree, not the session threshold.
+    DecryptDecoupled {
+        /// Genesis keys dir (pk_g.bin — invariant across the reshare).
+        #[arg(long)]
+        keys_dir: PathBuf,
+        /// Dir with the upward-reshared degree-d shares + upward-reshare.json.
+        #[arg(long)]
+        shares_dir: PathBuf,
+        #[arg(long, default_value_t = 42)]
+        value: u64,
+        #[arg(long, default_value = "decrypt-report.json")]
+        out: PathBuf,
+    },
     /// Measure the raw (unflooded) post-switch-and-squash noise using dev
     /// keys: encrypts zero, reconstructs without masks, logs |e|. The
     /// observed distribution anchors the analytical bound verdict.
@@ -389,6 +403,34 @@ async fn main() -> Result<()> {
                 &shares,
                 value,
                 session_kind,
+                &out,
+            )
+            .await?;
+            println!(
+                "DECRYPT-OK mode={} parties={} value={} ALL-AGREE wall={:.1}s report {}",
+                outcome.report.mode,
+                outcome.report.parties,
+                value,
+                outcome.report.wall_secs,
+                out.display()
+            );
+            Ok(())
+        }
+        Cmd::DecryptDecoupled {
+            keys_dir,
+            shares_dir,
+            value,
+            out,
+        } => {
+            eprintln!(
+                "celar-dkg: degree-decoupled threshold decrypt — pk from {}, reshared shares from {}",
+                keys_dir.display(),
+                shares_dir.display()
+            );
+            let outcome = celar_kms::decrypt::run_decoupled_threshold_decrypt(
+                &keys_dir,
+                &shares_dir,
+                value,
                 &out,
             )
             .await?;
