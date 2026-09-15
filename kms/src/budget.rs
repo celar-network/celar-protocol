@@ -151,6 +151,19 @@ pub const DECOUPLED_CONTRIBUTIONS: u32 = 79;
 /// 2^(LOG_B_EVAL + λ_stat) = 2^120.
 pub const LOG_FLOODING_MASK_BOUND: u32 = LOG_B_EVAL + DEPLOYED_FLOODING_STATSEC;
 
+/// log₂ of the per-contribution sampling bound for the DEGREE-DECOUPLED mask
+/// (§7.5). The decoupled mask is a SUM of up to [`DECOUPLED_CONTRIBUTIONS`]
+/// terms, so each term must be narrower than a single deployed source or the
+/// sum overshoots the decryption margin. Each term is drawn at half-width
+/// 2^(LOG_B_EVAL + DECOUPLED_FLOODING_STATSEC) = 2^114; summing 79 adds
+/// log₂(79) ≈ 6.3 bits, so the aggregate is ≈2^120.3 and — with the sign bit and
+/// the ≤2^LOG_B_EVAL evaluated noise on top — stays under Δ/2 = 2^122 (the
+/// λ ≤ 46 derivation on [`DECOUPLED_FLOODING_STATSEC`]). Using the deployed
+/// single-source bound [`LOG_FLOODING_MASK_BOUND`] (λ=52, 2^120) per term would
+/// make the 79-term sum ≈2^126.3 ≫ 2^122 and corrupt plaintexts silently — the
+/// exact failure the decoupled decrypt hits once degree+1 contributions are summed.
+pub const LOG_DECOUPLED_CONTRIB_BOUND: u32 = LOG_B_EVAL + DECOUPLED_FLOODING_STATSEC;
+
 /// log₂ of the LOWER bound on a partial decryption's flooding term —
 /// the two-sided range check.
 ///
