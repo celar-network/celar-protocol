@@ -353,9 +353,12 @@ pub async fn run_local_threshold_decrypt(
 /// Committee size and degree come from the `upward-reshare.json` transcript
 /// beside the shares; pk_G is invariant across the reshare and is loaded from
 /// the genesis `keys_dir`. Masks are generated locally here (DEV) — a production
-/// run sources them from the distributed mask supply. This is the local/dev
-/// path (small committees, `execute_protocol_small`); the degree-78/~100-seat
-/// scale run rides a rented large-committee ceremony.
+/// run sources them from the distributed mask supply. The session's corruption
+/// threshold is the Reed-Solomon tolerance ⌊(n−degree−1)/2⌋, decoupled from the
+/// key's sharing degree — so this runs the true production shape (e.g. degree 78
+/// on 100 seats, 79-of-100) at dev parameters with no committee-size ceiling.
+/// Only the production-*parameter* memory/wall confirmation rides a rented
+/// large-committee ceremony; the correctness of the topology does not.
 pub async fn run_decoupled_threshold_decrypt(
     keys_dir: &Path,
     shares_dir: &Path,
@@ -368,6 +371,22 @@ pub async fn run_decoupled_threshold_decrypt(
     )?;
     let parties = rt.new_committee_parties;
     let degree = rt.new_degree;
+
+    // The committee's corruption bound is the Reed-Solomon tolerance the
+    // robust-open enforces — floor((n - degree - 1)/2), §7.5 — NOT the degree.
+    // This is the decoupling: a degree-`d` key on `n` seats tolerates
+    // t = floor((n - d - 1)/2) corruptions, so n >= 3t+1 holds comfortably even
+    // when the degree is close to the committee size (degree 78 on 100 seats
+    // tolerates 10 — the 79-of-100 production shape) rather than demanding the
+    // impossible n >= 3*degree+1 that a threshold-equals-degree session forces.
+    if parties < degree + 1 {
+        bail!(
+            "committee of {parties} cannot reconstruct a degree-{degree} sharing \
+             (need at least degree+1 = {} seats)",
+            degree + 1
+        );
+    }
+    let committee_threshold = (parties - degree - 1) / 2;
 
     // pk_G is invariant across the reshare — from the genesis keys dir.
     let pk_bytes = fs::read(keys_dir.join(PK_FILE))
@@ -449,7 +468,7 @@ pub async fn run_decoupled_threshold_decrypt(
         _,
         ResiduePoly<Z128, EXTENSION_DEGREE>,
         EXTENSION_DEGREE,
-    >(parties, degree as u8, None, NetworkMode::Sync, None, &mut task, None)
+    >(parties, committee_threshold as u8, None, NetworkMode::Sync, None, &mut task, None)
     .await;
     let wall_secs = started.elapsed().as_secs_f64();
 
@@ -470,7 +489,9 @@ pub async fn run_decoupled_threshold_decrypt(
 
     let report = DecryptReport {
         schema: DECRYPT_SCHEMA.to_string(),
-        mode: format!("DegreeDecoupled (degree {degree}, network open at key degree, DEV masks)"),
+        mode: format!(
+            "DegreeDecoupled (degree {degree} on {parties} seats, committee t={committee_threshold} = RS tolerance ⌊(n−d−1)/2⌋, network open at key degree, DEV masks)"
+        ),
         parties,
         value_expected: value,
         recovered: results,

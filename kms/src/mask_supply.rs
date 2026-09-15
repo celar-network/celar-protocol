@@ -64,19 +64,22 @@ use algebra::sharing::share::Share;
 use algebra::structure_traits::FromU128;
 use threshold_types::role::Role;
 
-use crate::budget::{LOG_FLOODING_MASK_BOUND, LOG_FLOODING_MASK_LOWER_BOUND};
+use crate::budget::{LOG_B_EVAL, LOG_DECOUPLED_CONTRIB_BOUND};
 use crate::EXTENSION_DEGREE;
 
 /// The ring flooding terms are shared over (same as the threshold decrypt path).
 type MaskRing = ResiduePoly<Z128, EXTENSION_DEGREE>;
 
 /// log₂ floor on a single contribution's flooding term — the lower bound of the
-/// two-sided flooding range, mirrored from `budget.rs` so a change there forces
-/// a change here.
-pub const CONTRIB_LOG_MIN: u32 = LOG_FLOODING_MASK_LOWER_BOUND;
-/// log₂ ceiling on a single contribution's flooding term — the upper bound of
-/// the two-sided flooding range.
-pub const CONTRIB_LOG_MAX: u32 = LOG_FLOODING_MASK_BOUND;
+/// two-sided flooding range. The mask must be at least as large as the
+/// evaluated noise it drowns, so the floor is B_eval = 2^LOG_B_EVAL.
+pub const CONTRIB_LOG_MIN: u32 = LOG_B_EVAL;
+/// log₂ ceiling on a single contribution's flooding term — the DECOUPLED
+/// per-contribution bound, so a sum of up to `DECOUPLED_CONTRIBUTIONS` terms
+/// stays under Δ/2 = 2^122. NOT the deployed single-source bound, whose 79-sum
+/// overshoots the margin. The floor/ceiling gap is DECOUPLED_FLOODING_STATSEC
+/// (= 46), so an honest draw is range-rejected with probability 2^-46.
+pub const CONTRIB_LOG_MAX: u32 = LOG_DECOUPLED_CONTRIB_BOUND;
 
 /// Draw a flooding-term magnitude in the flooding range `[2^CONTRIB_LOG_MIN,
 /// 2^CONTRIB_LOG_MAX)`. Real TUniform sampling lands in this range for all but
@@ -359,8 +362,38 @@ mod tests {
         // sampling bound. If budget.rs moves these, this test forces the mask
         // supply to be re-derived rather than silently drifting.
         assert_eq!(CONTRIB_LOG_MIN, crate::budget::LOG_B_EVAL);
-        assert_eq!(CONTRIB_LOG_MAX, crate::budget::LOG_FLOODING_MASK_BOUND);
+        assert_eq!(CONTRIB_LOG_MAX, crate::budget::LOG_DECOUPLED_CONTRIB_BOUND);
         assert!(CONTRIB_LOG_MIN < CONTRIB_LOG_MAX);
+    }
+
+    #[test]
+    fn full_contribution_sum_fits_the_decryption_margin() {
+        // The mask is the SUM of up to DECOUPLED_CONTRIBUTIONS terms, each at
+        // most 2^CONTRIB_LOG_MAX in magnitude. That sum, plus the sign bit and
+        // the evaluated noise (≤ 2^LOG_B_EVAL) it rides on, must stay under
+        // Δ/2 = 2^122 — otherwise a full-degree decoupled decrypt corrupts the
+        // plaintext silently. Integer arithmetic, no logs.
+        const LOG_DELTA_HALF: u32 = 122;
+        let n = crate::budget::DECOUPLED_CONTRIBUTIONS as u128;
+        let per_term_max: u128 = 1u128 << CONTRIB_LOG_MAX; // magnitude ceiling
+        let sum_max = n * per_term_max; // worst-case aggregate magnitude
+        let noise_max: u128 = 1u128 << crate::budget::LOG_B_EVAL;
+        let margin: u128 = 1u128 << LOG_DELTA_HALF;
+        // signed terms → factor 2 headroom on the sum, then add the noise floor.
+        assert!(
+            sum_max
+                .checked_mul(2)
+                .and_then(|s| s.checked_add(noise_max))
+                .map(|t| t < margin)
+                .unwrap_or(false),
+            "79-term decoupled mask sum overshoots Δ/2 = 2^122"
+        );
+        // And the deployed single-source bound would NOT fit — guards the fix.
+        let deployed_term: u128 = 1u128 << crate::budget::LOG_FLOODING_MASK_BOUND;
+        assert!(
+            n * deployed_term >= margin,
+            "sanity: deployed per-term bound must be the one that overshoots"
+        );
     }
 
     #[test]
