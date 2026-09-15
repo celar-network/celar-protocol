@@ -33,6 +33,15 @@ use algebra::galois_rings::common::ResiduePoly;
 use algebra::sharing::shamir::{RevealOp, ShamirSharings};
 use algebra::sharing::share::Share;
 
+use threshold_execution::endpoints::decryption::{
+    combine_plaintext_blocks, partial_decrypt128, BlocksPartialDecrypt, SnsDecryptionKeyType,
+    SnsRadixOrBoolCiphertext,
+};
+use threshold_execution::endpoints::reconstruct::reconstruct_message;
+use threshold_execution::tfhe_internals::parameters::AugmentedCiphertextParameters;
+use threshold_execution::tfhe_internals::private_keysets::PrivateKeySet;
+use threshold_types::role::Role;
+
 use crate::mask_supply::SealedMaskBatch;
 use crate::EXTENSION_DEGREE;
 
@@ -95,6 +104,68 @@ pub fn degree_aware_flooded_open(
     sharing
         .error_reconstruct(degree, rs_tolerance(parties, degree))
         .map_err(|e| anyhow::anyhow!("flooded reconstruction failed: {e:?}"))
+}
+
+/// Decrypt a switch-and-squashed ciphertext against a key shared at `degree`,
+/// flooding with the degree-`degree` sealed mask — the degree-decoupled
+/// analogue of the upstream noiseflood combine, which masks and reconstructs at
+/// the session degree instead. LOCAL: it takes EVERY party's key share and
+/// computes their partials in one process, so the whole degree-aware path can
+/// be exercised end to end without a live committee. One `masks` entry per
+/// ciphertext block (each block floods with an independent mask).
+///
+/// Per block: each party's [`partial_decrypt128`] yields its share of the phase
+/// `b − ⟨a, s_j⟩` over the degree-`degree` key sharing; [`degree_aware_flooded_open`]
+/// adds that party's mask share and reconstructs the flooded phase at `degree`
+/// (tolerating the Reed–Solomon bound of faults); [`reconstruct_message`] maps
+/// the opened phase down to the block's message space; [`combine_plaintext_blocks`]
+/// recomposes the u64 plaintext. Reuses the upstream partial-decrypt and decode
+/// unchanged — only the mask-and-reconstruct middle is degree-aware.
+pub fn decrypt_decoupled_local(
+    sk_shares: &[PrivateKeySet<EXTENSION_DEGREE>],
+    roles: &[Role],
+    ct: &SnsRadixOrBoolCiphertext,
+    masks: &[SealedMaskBatch],
+    degree: usize,
+    ddec_key_type: SnsDecryptionKeyType,
+) -> Result<u64> {
+    if sk_shares.len() != roles.len() {
+        bail!(
+            "{} key shares but {} roles — one share per contributing party",
+            sk_shares.len(),
+            roles.len()
+        );
+    }
+    let blocks: Vec<_> = ct.packed_blocks().collect();
+    if masks.len() != blocks.len() {
+        bail!(
+            "{} sealed masks but {} ciphertext blocks — one mask per block",
+            masks.len(),
+            blocks.len()
+        );
+    }
+
+    // Per block: assemble each party's phase share, then open-and-flood at the
+    // key's degree.
+    let mut opened: Vec<Ring> = Vec::with_capacity(blocks.len());
+    for (block, mask) in blocks.iter().zip(masks) {
+        let mut partials: Vec<Share<Ring>> = Vec::with_capacity(roles.len());
+        for (role, sk) in roles.iter().zip(sk_shares) {
+            let phase = partial_decrypt128(sk, block, ddec_key_type)?;
+            partials.push(Share::new(*role, phase));
+        }
+        opened.push(degree_aware_flooded_open(&partials, mask, degree)?);
+    }
+
+    // Map opened flooded phases → message-space scalars → u64, exactly as the
+    // upstream combine does after its own open.
+    let params = &sk_shares[0].parameters;
+    let scalars = reconstruct_message(Some(opened), params)?;
+    let bits_in_block = ct.packing_factor() * params.message_modulus_log() as usize;
+    combine_plaintext_blocks::<u64>(BlocksPartialDecrypt {
+        bits_in_block: bits_in_block as u32,
+        partial_decryptions: scalars,
+    })
 }
 
 #[cfg(test)]
@@ -216,5 +287,93 @@ mod tests {
         let mask = builder.seal().unwrap();
         let opened = degree_aware_flooded_open(&partials, &mask, DEGREE).unwrap();
         assert_ne!(opened, phase, "mask should shift a zero phase off zero");
+    }
+
+    #[tokio::test]
+    async fn decoupled_decrypt_recovers_a_real_ciphertext() {
+        // End-to-end: generate a switch-and-squash keyset SHARED AT DEGREE d in
+        // one in-test distributed keygen (insecure keygen at session threshold
+        // = d), encrypt a value, then reconstruct at the KEY's degree via the
+        // degree-decoupled path — proving the wiring recovers the plaintext
+        // against a real key and ciphertext, not just synthetic shares.
+        use tfhe::prelude::CiphertextList;
+        use threshold_execution::endpoints::decryption::RadixOrBoolCiphertext;
+        use threshold_execution::runtime::sessions::session_parameters::GenericParameterHandles;
+        use threshold_execution::runtime::sessions::small_session::SmallSession;
+        use threshold_execution::tests::helper::tests_and_benches::execute_protocol_small;
+        use threshold_execution::tfhe_internals::parameters::PARAMS_TEST_BK_SNS;
+        use threshold_execution::tfhe_internals::public_keysets::FhePubKeySet;
+        use threshold_execution::tfhe_internals::test_feature::insecure_initialize_key_material;
+        use threshold_types::network::NetworkMode;
+
+        const N: usize = 7; // parties
+        const D: usize = 3; // key sharing degree — reconstruction happens HERE
+        let value: u64 = 42;
+
+        // 1) In-test distributed keygen: an SnS keyset shared at degree D across N.
+        let mut task = |mut session: SmallSession<Ring>, _info: Option<String>| async move {
+            let role = session.my_role();
+            let (pubkeys, my_share) = insecure_initialize_key_material::<_, EXTENSION_DEGREE>(
+                &mut session,
+                PARAMS_TEST_BK_SNS,
+                tfhe::Tag::default(),
+            )
+            .await
+            .unwrap();
+            (role, pubkeys, my_share)
+        };
+        let mut results = execute_protocol_small::<_, _, Ring, EXTENSION_DEGREE>(
+            N,
+            D as u8,
+            None,
+            NetworkMode::Sync,
+            None,
+            &mut task,
+            None,
+        )
+        .await;
+        results.sort_by_key(|(r, _, _)| r.one_based());
+        let roles: Vec<Role> = results.iter().map(|(r, _, _)| *r).collect();
+        let pk: FhePubKeySet = results[0].1.clone();
+        let sk_shares: Vec<_> = results.into_iter().map(|(_, _, sk)| sk).collect();
+
+        // 2) Client side: encrypt under pk_G, then switch-and-squash.
+        tfhe::set_server_key(pk.server_key.clone());
+        let compact = tfhe::CompactCiphertextList::builder(&pk.public_key)
+            .push(value)
+            .build();
+        let expanded = compact.expand().unwrap();
+        let ct: tfhe::FheUint64 = expanded.get(0).unwrap().unwrap();
+        let (radix, _, _, _) = ct.into_raw_parts();
+        let small_ct = RadixOrBoolCiphertext::Radix(radix);
+        let int_sk: &tfhe::integer::ServerKey = pk.server_key.as_ref();
+        let sns_key = pk.server_key.noise_squashing_key().unwrap();
+        let large_ct = match &small_ct {
+            RadixOrBoolCiphertext::Radix(c) => SnsRadixOrBoolCiphertext::Radix(
+                sns_key.squash_radix_ciphertext_noise(int_sk, c).unwrap(),
+            ),
+            RadixOrBoolCiphertext::Bool(_) => panic!("radix expected"),
+        };
+
+        // 3) One independent degree-D flooding mask per packed block.
+        let n_blocks = large_ct.packed_blocks().count();
+        let masks: Vec<SealedMaskBatch> = (0..n_blocks)
+            .map(|_| build_honest_batch(N, D, D + 1).unwrap())
+            .collect();
+
+        // 4) Degree-decoupled decrypt and recover.
+        let recovered = decrypt_decoupled_local(
+            &sk_shares,
+            &roles,
+            &large_ct,
+            &masks,
+            D,
+            SnsDecryptionKeyType::SnsKey,
+        )
+        .unwrap();
+        assert_eq!(
+            recovered, value,
+            "degree-decoupled decrypt must recover the plaintext"
+        );
     }
 }
