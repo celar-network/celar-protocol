@@ -502,3 +502,140 @@ pub async fn run_decoupled_threshold_decrypt(
     fs::write(out_path, serde_json::to_string_pretty(&report)?)?;
     Ok(DecryptOutput { report })
 }
+
+// ---- distributed decoupled decrypt: producer side (single process) --------
+
+/// Shared switch-and-squash ciphertext file — one copy, loaded identically by
+/// every seat (the decrypt only agrees if all seats decrypt the SAME ct).
+pub const DECOUPLED_CT_FILE: &str = "ct.bin";
+/// This seat's flooding-mask shares (one degree-`d` share per block).
+pub fn decoupled_mask_file(role: usize) -> String {
+    format!("mask_{role:03}.bin")
+}
+/// Manifest naming the committee shape the seats must all agree on.
+pub const DECOUPLED_MANIFEST_FILE: &str = "decrypt-inputs.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecoupledDecryptManifest {
+    pub schema: String,
+    pub value_expected: u64,
+    pub parties: usize,
+    pub degree: usize,
+    /// Session corruption threshold = the RS tolerance ⌊(n−degree−1)/2⌋.
+    pub committee_threshold: usize,
+    pub n_blocks: usize,
+}
+
+pub const DECOUPLED_MANIFEST_SCHEMA: &str = "celar-decoupled-decrypt-inputs/v0";
+
+/// Produce, in one process, the artifacts a DISTRIBUTED decoupled decrypt
+/// consumes: the shared SnS ciphertext, per-seat flooding-mask shares, the
+/// per-seat degree-`d` key shares (copied from `shares_dir`), pk_G, and a
+/// manifest. This is the one-time offline half; the seats then run the
+/// networked decrypt over these files (mask sampling is distributed in
+/// production — pre-generating here is a measurement/dev convenience and does
+/// not change the decrypt's compute or memory footprint).
+pub fn prepare_decoupled_decrypt_inputs(
+    keys_dir: &Path,
+    shares_dir: &Path,
+    value: u64,
+    out_dir: &Path,
+) -> Result<DecoupledDecryptManifest> {
+    let rt = crate::reshare::UpwardReshareTranscript::load(
+        &shares_dir.join("upward-reshare.json"),
+    )?;
+    let parties = rt.new_committee_parties;
+    let degree = rt.new_degree;
+    if parties < degree + 1 {
+        bail!(
+            "committee of {parties} cannot reconstruct a degree-{degree} sharing \
+             (need at least degree+1 = {} seats)",
+            degree + 1
+        );
+    }
+    let committee_threshold = (parties - degree - 1) / 2;
+    fs::create_dir_all(out_dir)?;
+
+    // pk_G is invariant across the reshare — from the genesis keys dir.
+    let pk_bytes = fs::read(keys_dir.join(PK_FILE))
+        .context("reading pk_g.bin (dev keys required)")?;
+    let pk: FhePubKeySet = bincode::deserialize(&pk_bytes).context("deserializing pk_G")?;
+
+    // Encrypt + switch-and-squash — identical to the coupled path.
+    tfhe::set_server_key(pk.server_key.clone());
+    let compact = tfhe::CompactCiphertextList::builder(&pk.public_key)
+        .push(value)
+        .build();
+    let expanded = compact.expand().context("expanding compact list")?;
+    let ct: tfhe::FheUint64 = expanded
+        .get(0)
+        .context("compact list slot 0")?
+        .context("slot 0 empty")?;
+    let (radix, _, _, _) = ct.into_raw_parts();
+    let small_ct = RadixOrBoolCiphertext::Radix(radix);
+    let int_server_key: &tfhe::integer::ServerKey = pk.server_key.as_ref();
+    let sns_key = pk
+        .server_key
+        .noise_squashing_key()
+        .context("server key has no noise-squashing key")?;
+    let large_ct = match &small_ct {
+        RadixOrBoolCiphertext::Radix(c) => SnsRadixOrBoolCiphertext::Radix(
+            sns_key
+                .squash_radix_ciphertext_noise(int_server_key, c)
+                .map_err(|e| anyhow::anyhow!("switch-and-squash failed: {e:?}"))?,
+        ),
+        RadixOrBoolCiphertext::Bool(_) => bail!("fixture is a radix ciphertext"),
+    };
+    let n_blocks = large_ct.packed_blocks().count();
+    // SnsRadixOrBoolCiphertext itself is not Serialize; its inner tfhe
+    // SquashedNoiseRadixCiphertext is. Serialize the inner and reconstruct the
+    // wrapper on the seat side.
+    let ct_bytes = match &large_ct {
+        SnsRadixOrBoolCiphertext::Radix(inner) => {
+            bincode::serialize(inner).context("serializing SnS radix ciphertext")?
+        }
+        SnsRadixOrBoolCiphertext::Bool(_) => bail!("fixture is a radix ciphertext"),
+    };
+    fs::write(out_dir.join(DECOUPLED_CT_FILE), ct_bytes)?;
+
+    // One degree-`degree` flooding mask per block; split each seat's shares out
+    // to its own file, indexed by one-based role.
+    let mask_batches: Vec<crate::mask_supply::SealedMaskBatch> = (0..n_blocks)
+        .map(|_| crate::mask_supply::build_honest_batch(parties, degree, degree + 1))
+        .collect::<Result<Vec<_>>>()?;
+    let mut mask_by_role: Vec<Vec<Share<ResiduePoly<Z128, EXTENSION_DEGREE>>>> =
+        vec![Vec::with_capacity(n_blocks); parties];
+    for mb in &mask_batches {
+        for share in mb.mask_shares() {
+            mask_by_role[share.owner().one_based() - 1].push(share.clone());
+        }
+    }
+    for (i, shares) in mask_by_role.iter().enumerate() {
+        fs::write(
+            out_dir.join(decoupled_mask_file(i + 1)),
+            bincode::serialize(shares).context("serializing mask shares")?,
+        )?;
+    }
+
+    // Stage the degree-`d` key shares and pk_G beside the inputs so a seat's
+    // input dir is self-contained.
+    for role in 1..=parties {
+        fs::copy(shares_dir.join(share_file(role)), out_dir.join(share_file(role)))
+            .with_context(|| format!("copying degree-d share for role {role}"))?;
+    }
+    fs::write(out_dir.join(PK_FILE), &pk_bytes)?;
+
+    let manifest = DecoupledDecryptManifest {
+        schema: DECOUPLED_MANIFEST_SCHEMA.to_string(),
+        value_expected: value,
+        parties,
+        degree,
+        committee_threshold,
+        n_blocks,
+    };
+    fs::write(
+        out_dir.join(DECOUPLED_MANIFEST_FILE),
+        serde_json::to_string_pretty(&manifest)?,
+    )?;
+    Ok(manifest)
+}
