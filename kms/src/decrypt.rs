@@ -84,6 +84,27 @@ pub const DECRYPT_SCHEMA: &str = "celar-decrypt-report/v0";
 /// AND the only one whose ceiling admits 50 (no binom factor in its mask).
 pub const PRODUCTION_FLOODING_STATSEC: u32 = threshold_execution::constants::STATSEC_TUNIFORM;
 
+/// Load pk_G from `pk_g.bin`, accepting BOTH on-disk forms:
+/// - the simulator's decompressed [`FhePubKeySet`] (`celar-dkg run --write-dev-keys`), and
+/// - the ceremony's COMPRESSED `CompressedXofKeySet` (`celar-kms-node` commits the
+///   compressed keyset; decompression is a local operation done here).
+///
+/// A real distributed key comes from `celar-kms-node`, so this MUST handle the
+/// compressed form — deserializing it as a `FhePubKeySet` fails with "unexpected
+/// end of file". Tries the decompressed form first (cheap), then decompresses.
+fn load_pubkeyset(pk_bytes: &[u8]) -> Result<FhePubKeySet> {
+    if let Ok(pk) = bincode::deserialize::<FhePubKeySet>(pk_bytes) {
+        return Ok(pk);
+    }
+    let compressed: tfhe::xof_key_set::CompressedXofKeySet = bincode::deserialize(pk_bytes)
+        .context("pk_g.bin is neither a FhePubKeySet nor a CompressedXofKeySet")?;
+    let (public_key, server_key) = compressed.decompress().into_raw_parts();
+    Ok(FhePubKeySet {
+        public_key,
+        server_key,
+    })
+}
+
 /// Which session family runs the threshold decryption.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecryptSession {
@@ -148,7 +169,7 @@ pub async fn run_local_threshold_decrypt(
     // pk_G: FhePubKeySet { public_key (compact), server_key } from the DKG.
     let pk_bytes = fs::read(keys_dir.join(PK_FILE))
         .context("reading pk_g.bin (dev keys required — rerun DKG with --write-dev-keys)")?;
-    let pk: FhePubKeySet = bincode::deserialize(&pk_bytes).context("deserializing pk_G")?;
+    let pk = load_pubkeyset(&pk_bytes)?;
 
     // 1) Encrypt the fixture value under pk_G, exactly as a client would.
     tfhe::set_server_key(pk.server_key.clone());
@@ -391,7 +412,7 @@ pub async fn run_decoupled_threshold_decrypt(
     // pk_G is invariant across the reshare — from the genesis keys dir.
     let pk_bytes = fs::read(keys_dir.join(PK_FILE))
         .context("reading pk_g.bin (dev keys required)")?;
-    let pk: FhePubKeySet = bincode::deserialize(&pk_bytes).context("deserializing pk_G")?;
+    let pk = load_pubkeyset(&pk_bytes)?;
 
     // 1) Encrypt + 2) switch-and-squash — identical to the coupled path.
     tfhe::set_server_key(pk.server_key.clone());
@@ -559,7 +580,7 @@ pub fn prepare_decoupled_decrypt_inputs(
     // pk_G is invariant across the reshare — from the genesis keys dir.
     let pk_bytes = fs::read(keys_dir.join(PK_FILE))
         .context("reading pk_g.bin (dev keys required)")?;
-    let pk: FhePubKeySet = bincode::deserialize(&pk_bytes).context("deserializing pk_G")?;
+    let pk = load_pubkeyset(&pk_bytes)?;
 
     // Encrypt + switch-and-squash — identical to the coupled path.
     tfhe::set_server_key(pk.server_key.clone());
