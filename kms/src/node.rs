@@ -964,6 +964,207 @@ pub async fn run_ceremony(cfg: &NodeConfig) -> Result<TranscriptFragment> {
     Ok(fragment)
 }
 
+// ---------------------------------------------------------------- distributed decrypt
+
+/// Bring up this seat's mTLS transport and one networked `BaseSession` at
+/// `mode`/`threshold`. Factored out of the ceremony's inline setup so the
+/// distributed decrypt reuses exactly the same transport + identity plumbing
+/// (the `MpcIdentity` keying, the committee-scale net tuning, the keepalives).
+/// Returns the manager, the still-running server task (keep it alive until the
+/// operator stops), and the base session.
+async fn bring_up_session(
+    cfg: &NodeConfig,
+    sid: SessionId,
+    threshold: u8,
+    mode: NetworkMode,
+) -> Result<(
+    Arc<GrpcNetworkingManager>,
+    tokio::task::JoinHandle<std::result::Result<(), tonic::transport::Error>>,
+    BaseSession,
+)> {
+    let my_role = Role::indexed_from_one(cfg.role);
+    let client_tls = build_client_tls(&cfg.tls)?;
+    let manager = Arc::new(GrpcNetworkingManager::new(Some(client_tls), cfg.net_config())?);
+    let mpc_service = manager.new_server(TlsExtensionGetter::TlsConnectInfo);
+
+    let bind = format!("{}:{}", cfg.listen_addr, cfg.my_peer().port);
+    let server_tls_cfg = server_tls(&cfg.tls)?;
+    let server_handle = tokio::spawn(
+        Server::builder()
+            .tls_config(server_tls_cfg)?
+            .http2_adaptive_window(Some(true))
+            .http2_keepalive_interval(Some(Duration::from_secs(20)))
+            .http2_keepalive_timeout(Some(Duration::from_secs(10)))
+            .tcp_keepalive(Some(Duration::from_secs(20)))
+            .add_service(mpc_service)
+            .serve(bind.parse().context("parsing bind address")?),
+    );
+    eprintln!("celar-kms-node[{}]: mTLS MPC server on {bind}", cfg.role);
+
+    tokio::time::sleep(Duration::from_secs(cfg.startup_wait_secs)).await;
+
+    let assignment: RoleAssignment<Role> = HashMap::from_iter(cfg.peers.iter().map(|p| {
+        (
+            Role::indexed_from_one(p.role),
+            Identity::new(
+                p.host.clone(),
+                p.port,
+                Some(p.mpc.clone().unwrap_or_else(|| p.host.clone())),
+            ),
+        )
+    }))
+    .into();
+    let role_set: std::collections::HashSet<Role> = assignment.keys().cloned().collect();
+
+    let networking = manager
+        .make_network_session(sid, &assignment, my_role, mode)
+        .await
+        .context("creating the network session (are all peers reachable?)")?;
+    let params = SessionParameters::new(threshold, sid, my_role, role_set)
+        .map_err(|e| anyhow::anyhow!("session parameters: {e:?}"))?;
+    let base = BaseSession::new(params, networking, AesRng::from_random_seed())
+        .map_err(|e| anyhow::anyhow!("base session: {e:?}"))?;
+
+    Ok((manager, server_handle, base))
+}
+
+/// What one seat reports from a distributed decrypt: the recovered plaintext,
+/// so the operator can confirm all seats agree (the analogue of pk_G equality).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecryptResultFragment {
+    pub schema: String,
+    pub role: usize,
+    pub parties: usize,
+    pub degree: usize,
+    pub committee_threshold: usize,
+    pub recovered: u64,
+    pub value_expected: u64,
+    pub agree: bool,
+    pub wall_secs: f64,
+}
+
+pub const DECRYPT_RESULT_SCHEMA: &str = "celar-decrypt-result/v1";
+
+pub fn decrypt_result_file(role: usize) -> String {
+    format!("decrypt_result_{role:03}.json")
+}
+
+/// Run this seat's side of a DISTRIBUTED degree-decoupled threshold decrypt over
+/// mTLS. The committee shape and the artifacts come from `inputs_dir` (produced
+/// by `celar-dkg decrypt-prepare`): the shared SnS ciphertext, this seat's
+/// degree-`d` key share and flooding-mask shares. Reconstruction happens at the
+/// KEY's degree via the network robust-open, so the session runs at the RS
+/// tolerance `⌊(n−degree−1)/2⌋` (from the manifest), decoupled from the degree.
+pub async fn run_distributed_decrypt(
+    cfg: &NodeConfig,
+    inputs_dir: &Path,
+) -> Result<DecryptResultFragment> {
+    use algebra::sharing::share::Share;
+    use threshold_execution::endpoints::decryption::{
+        SnsDecryptionKeyType, SnsRadixOrBoolCiphertext,
+    };
+    use threshold_execution::tfhe_internals::private_keysets::PrivateKeySet;
+
+    cfg.validate()?;
+    let manifest: crate::decrypt::DecoupledDecryptManifest = serde_json::from_str(
+        &fs::read_to_string(inputs_dir.join(crate::decrypt::DECOUPLED_MANIFEST_FILE))
+            .context("reading decrypt-inputs.json")?,
+    )?;
+    if manifest.parties != cfg.committee.parties {
+        bail!(
+            "inputs are for a {}-seat committee but this node's committee is {}",
+            manifest.parties,
+            cfg.committee.parties
+        );
+    }
+    let degree = manifest.degree;
+    let threshold = manifest.committee_threshold;
+
+    // This seat's degree-d key share and its per-block flooding-mask shares.
+    let share: PrivateKeySet<EXTENSION_DEGREE> = bincode::deserialize(
+        &fs::read(inputs_dir.join(crate::transcript::share_file(cfg.role)))
+            .context("reading this seat's degree-d share")?,
+    )?;
+    let mask_shares: Vec<Share<Poly>> = bincode::deserialize(
+        &fs::read(inputs_dir.join(crate::decrypt::decoupled_mask_file(cfg.role)))
+            .context("reading this seat's mask shares")?,
+    )?;
+    // The shared switch-and-squash ciphertext — identical across seats. The
+    // wrapper enum is not Serialize; the producer wrote the inner tfhe
+    // SquashedNoiseRadixCiphertext, so reconstruct the Radix wrapper here.
+    let inner: tfhe::integer::ciphertext::SquashedNoiseRadixCiphertext = bincode::deserialize(
+        &fs::read(inputs_dir.join(crate::decrypt::DECOUPLED_CT_FILE))
+            .context("reading the shared SnS ciphertext")?,
+    )?;
+    let large_ct = SnsRadixOrBoolCiphertext::Radix(inner);
+
+    // Networked SYNC session at the RS tolerance. The decrypt is a SINGLE
+    // robust-open (not keygen's many-round opens under tight deadlines, which is
+    // what the Async doctrine exists for), so with a generous per-round timeout
+    // every seat collects all shares and reconstructs identically — matching the
+    // in-process test, which runs this same open in Sync. Async here has
+    // effectively no deadline and would wait forever. Wrap as a LargeSession —
+    // it satisfies BaseSessionHandles for the robust-open and needs no PRSS.
+    let sid = SessionId::from(cfg.session_id as u128);
+    let (_manager, server_handle, base) =
+        bring_up_session(cfg, sid, threshold as u8, NetworkMode::Sync).await?;
+    base.network()
+        .set_timeout_for_next_round(Duration::from_secs(cfg.round_timeout_secs))
+        .await;
+    let large = LargeSession::new(base);
+
+    eprintln!(
+        "celar-kms-node[{}]: degree-aware decrypt (degree {degree}, committee t={threshold}, sync)…",
+        cfg.role
+    );
+    let started = Instant::now();
+    let recovered = crate::degree_decrypt::run_degree_aware_decrypt(
+        &large,
+        &share,
+        &mask_shares,
+        &large_ct,
+        degree,
+        SnsDecryptionKeyType::SnsKey,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("degree-aware decrypt failed: {e:?}"))?;
+    let wall_secs = started.elapsed().as_secs_f64();
+
+    let agree = recovered == manifest.value_expected;
+    let fragment = DecryptResultFragment {
+        schema: DECRYPT_RESULT_SCHEMA.to_string(),
+        role: cfg.role,
+        parties: manifest.parties,
+        degree,
+        committee_threshold: threshold,
+        recovered,
+        value_expected: manifest.value_expected,
+        agree,
+        wall_secs,
+    };
+    fs::create_dir_all(&cfg.out_dir)?;
+    fs::write(
+        cfg.out_dir.join(decrypt_result_file(cfg.role)),
+        serde_json::to_string_pretty(&fragment)?,
+    )?;
+    println!(
+        "DECRYPT-OK role={} recovered={} expected={} {} wall={:.2}s result {}",
+        cfg.role,
+        recovered,
+        manifest.value_expected,
+        if agree { "AGREE" } else { "⚠ MISMATCH" },
+        wall_secs,
+        cfg.out_dir.join(decrypt_result_file(cfg.role)).display(),
+    );
+    eprintln!(
+        "celar-kms-node[{}]: result written; STAYING UP to serve peers — \
+         stop this process only after all seats have finished.",
+        cfg.role
+    );
+    let _ = server_handle.await;
+    Ok(fragment)
+}
+
 #[cfg(test)]
 mod endorsement_tests {
     use super::*;

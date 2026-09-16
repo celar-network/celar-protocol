@@ -17,8 +17,8 @@ use clap::{Parser, Subcommand};
 
 use celar_kms::config::CommitteeConfig;
 use celar_kms::node::{
-    run_ceremony, NodeConfig, PeerEntry, TlsPaths, TranscriptFragment,
-    FRAGMENT_SCHEMA,
+    run_ceremony, run_distributed_decrypt, NodeConfig, PeerEntry, TlsPaths,
+    TranscriptFragment, FRAGMENT_SCHEMA,
 };
 use celar_kms::transcript::{PartyRecord, Transcript};
 
@@ -104,6 +104,18 @@ enum Cmd {
     Collect {
         #[arg(long, default_value = "ceremony")]
         dir: PathBuf,
+    },
+    /// Run this node's side of a DISTRIBUTED degree-decoupled threshold decrypt
+    /// over mTLS. Uses the same node config as `run`; the committee shape and
+    /// per-seat artifacts come from `--inputs` (built by `celar-dkg
+    /// decrypt-prepare`). Blocks serving until stopped, like `run`.
+    DecryptDecoupled {
+        #[arg(long)]
+        config: PathBuf,
+        /// Dir with this seat's decrypt inputs (ct.bin, mask_NNN.bin, degree-d
+        /// share files, pk, decrypt-inputs.json).
+        #[arg(long)]
+        inputs: PathBuf,
     },
 }
 
@@ -378,6 +390,14 @@ async fn main() -> Result<()> {
                 first.pk_g_sha256,
                 dir.join("transcript.json").display()
             );
+            Ok(())
+        }
+        Cmd::DecryptDecoupled { config, inputs } => {
+            let cfg = NodeConfig::load(&config)?;
+            // run_distributed_decrypt writes decrypt_result_NNN.json, prints
+            // DECRYPT-OK, then keeps serving until the process is stopped (peers
+            // may still need this seat's robust-open messages).
+            run_distributed_decrypt(&cfg, &inputs).await?;
             Ok(())
         }
     }

@@ -138,6 +138,23 @@ enum Cmd {
         #[arg(long, default_value = "decrypt-report.json")]
         out: PathBuf,
     },
+    /// Prepare the artifacts a DISTRIBUTED decoupled decrypt consumes (shared
+    /// SnS ciphertext, per-seat flooding-mask shares, degree-d key shares, pk)
+    /// from an upward-reshared dir. Single process; the seats then run
+    /// `celar-kms-node decrypt-decoupled` over these files.
+    DecryptPrepare {
+        /// Genesis keys dir (pk_g.bin — invariant across the reshare).
+        #[arg(long)]
+        keys_dir: PathBuf,
+        /// Dir with the upward-reshared degree-d shares + upward-reshare.json.
+        #[arg(long)]
+        shares_dir: PathBuf,
+        #[arg(long, default_value_t = 42)]
+        value: u64,
+        /// Output dir for the per-seat inputs (distribute one copy to each seat).
+        #[arg(long, default_value = "decrypt-inputs")]
+        out: PathBuf,
+    },
     /// Measure the raw (unflooded) post-switch-and-squash noise using dev
     /// keys: encrypts zero, reconstructs without masks, logs |e|. The
     /// observed distribution anchors the analytical bound verdict.
@@ -440,6 +457,30 @@ async fn main() -> Result<()> {
                 outcome.report.parties,
                 value,
                 outcome.report.wall_secs,
+                out.display()
+            );
+            Ok(())
+        }
+        Cmd::DecryptPrepare {
+            keys_dir,
+            shares_dir,
+            value,
+            out,
+        } => {
+            eprintln!(
+                "celar-dkg: preparing distributed decoupled-decrypt inputs — pk from {}, reshared shares from {}",
+                keys_dir.display(),
+                shares_dir.display()
+            );
+            let m = celar_kms::decrypt::prepare_decoupled_decrypt_inputs(
+                &keys_dir,
+                &shares_dir,
+                value,
+                &out,
+            )?;
+            println!(
+                "PREPARE-OK parties={} degree={} committee_t={} blocks={} value={} → {}",
+                m.parties, m.degree, m.committee_threshold, m.n_blocks, m.value_expected,
                 out.display()
             );
             Ok(())
