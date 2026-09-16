@@ -64,8 +64,17 @@ use tokio_rustls::rustls::RootCertStore;
 use tonic::transport::{Server, ServerTlsConfig};
 use x509_parser::pem::parse_x509_pem;
 
+use algebra::base_ring::Z64;
+use threshold_execution::endpoints::reshare_sk::{
+    ResharePreprocRequired, ReshareSecretKeys, SecureReshareSecretKeys,
+};
+use threshold_execution::online::preprocessing::dummy::DummyPreprocessing;
+use threshold_execution::runtime::sessions::base_session::GenericBaseSession;
+use threshold_execution::runtime::sessions::session_parameters::GenericSessionParameters;
+use threshold_types::role::{DualRole, TwoSetsRole, TwoSetsThreshold};
+
 use crate::config::CommitteeConfig;
-use crate::transcript::sha256_hex;
+use crate::transcript::{sha256_hex, share_file};
 use crate::EXTENSION_DEGREE;
 
 type Poly = ResiduePoly<Z128, EXTENSION_DEGREE>;
@@ -1159,6 +1168,241 @@ pub async fn run_distributed_decrypt(
     eprintln!(
         "celar-kms-node[{}]: result written; STAYING UP to serve peers — \
          stop this process only after all seats have finished.",
+        cfg.role
+    );
+    let _ = server_handle.await;
+    Ok(fragment)
+}
+
+// ---------------------------------------------------------------- distributed reshare
+
+/// One seat's distributed upward-reshare result — the new degree-`d` share's
+/// digest, so the operator can confirm every seat reshared one consistent key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReshareResultFragment {
+    pub schema: String,
+    pub role: usize,
+    pub parties: usize,
+    pub old_degree: usize,
+    pub new_degree: usize,
+    pub new_share_sha256: String,
+    pub wall_secs: f64,
+}
+
+pub const RESHARE_RESULT_SCHEMA: &str = "celar-reshare-result/v1";
+
+pub fn reshare_result_file(role: usize) -> String {
+    format!("reshare_result_{role:03}.json")
+}
+
+/// Run this seat's side of a DISTRIBUTED upward reshare over mTLS — an in-place
+/// degree raise on the committee (old committee = new committee = the peers,
+/// every seat playing `TwoSetsRole::Both`), taking the key's sharing degree from
+/// the committee's current degree up to `new_degree`. pk_G is invariant (§7.5).
+/// Reads this seat's old share from `in_dir`, writes its new degree-`new_degree`
+/// share to `out_dir`.
+///
+/// Unlike the single-process `run_upward_reshare` (test harness, all shares in
+/// one process), the resharing runs over the real network so no party ever sees
+/// another's share — the production requirement for a genesis→decoupled-degree
+/// transition. Two sessions are multiplexed on one mTLS transport: a combined
+/// `TwoSetsRole`-keyed session (the cross-set channel) and the set-2 `Role`
+/// session (the new committee's channel).
+pub async fn run_distributed_reshare(
+    cfg: &NodeConfig,
+    in_dir: &Path,
+    out_dir: &Path,
+    new_degree: usize,
+) -> Result<ReshareResultFragment> {
+    use threshold_execution::tfhe_internals::private_keysets::PrivateKeySet;
+
+    cfg.validate()?;
+    let n = cfg.committee.parties;
+    // Old sharing degree = the committee's session threshold — the same
+    // derivation the single-process upward reshare uses.
+    let old_degree = CommitteeConfig {
+        parties: n,
+        ..Default::default()
+    }
+    .session_threshold();
+    if new_degree <= old_degree {
+        bail!("new degree {new_degree} must exceed the old degree {old_degree}");
+    }
+    if n < new_degree + 1 {
+        bail!("committee of {n} cannot carry a degree-{new_degree} sharing (need >= degree+1)");
+    }
+    let params = match cfg.committee.params {
+        crate::config::ParamsChoice::Test => {
+            threshold_execution::tfhe_internals::parameters::PARAMS_TEST_BK_SNS
+        }
+        crate::config::ParamsChoice::NistP32SnsFglwe => {
+            threshold_execution::tfhe_internals::parameters::NIST_PARAMS_P32_SNS_FGLWE
+        }
+    };
+
+    // This seat's old degree-`t` share — the set-1 input.
+    let mut my_share: PrivateKeySet<EXTENSION_DEGREE> = bincode::deserialize(
+        &fs::read(in_dir.join(share_file(cfg.role))).context("reading this seat's old share")?,
+    )?;
+    let oprf = my_share.oprf_secret_key_share.is_some();
+
+    // --- mTLS transport: one server, two sessions multiplexed by session id ---
+    let my_r = Role::indexed_from_one(cfg.role);
+    let client_tls = build_client_tls(&cfg.tls)?;
+    let manager = Arc::new(GrpcNetworkingManager::new(Some(client_tls), cfg.net_config())?);
+    let mpc_service = manager.new_server(TlsExtensionGetter::TlsConnectInfo);
+    let bind = format!("{}:{}", cfg.listen_addr, cfg.my_peer().port);
+    let server_tls_cfg = server_tls(&cfg.tls)?;
+    let server_handle = tokio::spawn(
+        Server::builder()
+            .tls_config(server_tls_cfg)?
+            .http2_adaptive_window(Some(true))
+            .http2_keepalive_interval(Some(Duration::from_secs(20)))
+            .http2_keepalive_timeout(Some(Duration::from_secs(10)))
+            .tcp_keepalive(Some(Duration::from_secs(20)))
+            .add_service(mpc_service)
+            .serve(bind.parse().context("parsing bind address")?),
+    );
+    eprintln!("celar-kms-node[{}]: mTLS MPC server on {bind}", cfg.role);
+    tokio::time::sleep(Duration::from_secs(cfg.startup_wait_secs)).await;
+
+    // In-place: every seat is Both{set1: r, set2: r}. Two role→Identity maps over
+    // the SAME peers — one keyed by TwoSetsRole, one by Role.
+    let ident = |p: &PeerEntry| {
+        Identity::new(
+            p.host.clone(),
+            p.port,
+            Some(p.mpc.clone().unwrap_or_else(|| p.host.clone())),
+        )
+    };
+    let my_both = TwoSetsRole::Both(DualRole {
+        role_set_1: my_r,
+        role_set_2: my_r,
+    });
+    let ts_assignment: RoleAssignment<TwoSetsRole> =
+        HashMap::from_iter(cfg.peers.iter().map(|p| {
+            let r = Role::indexed_from_one(p.role);
+            (
+                TwoSetsRole::Both(DualRole {
+                    role_set_1: r,
+                    role_set_2: r,
+                }),
+                ident(p),
+            )
+        }))
+        .into();
+    let ts_roles: std::collections::HashSet<TwoSetsRole> =
+        ts_assignment.keys().cloned().collect();
+
+    let s2_assignment: RoleAssignment<Role> =
+        HashMap::from_iter(cfg.peers.iter().map(|p| (Role::indexed_from_one(p.role), ident(p))))
+            .into();
+    let s2_roles: std::collections::HashSet<Role> = s2_assignment.keys().cloned().collect();
+
+    let sid_common = SessionId::from(cfg.session_id as u128);
+    let sid_s2 = SessionId::from(cfg.session_id as u128 + 1);
+
+    // Combined two-sets session (cross-set channel).
+    let net_common = manager
+        .make_network_session(sid_common, &ts_assignment, my_both, NetworkMode::Sync)
+        .await
+        .context("creating the two-sets network session")?;
+    let params_common = GenericSessionParameters::<TwoSetsRole>::new(
+        TwoSetsThreshold {
+            threshold_set_1: old_degree as u8,
+            threshold_set_2: new_degree as u8,
+        },
+        sid_common,
+        my_both,
+        ts_roles.clone(),
+    )
+    .map_err(|e| anyhow::anyhow!("two-sets session parameters: {e:?}"))?;
+    let common =
+        GenericBaseSession::<TwoSetsRole>::new(params_common, net_common, AesRng::from_random_seed())
+            .map_err(|e| anyhow::anyhow!("two-sets base session: {e:?}"))?;
+    common
+        .network()
+        .set_timeout_for_next_round(Duration::from_secs(cfg.round_timeout_secs))
+        .await;
+
+    // Set-2 (new committee) session.
+    let net_s2 = manager
+        .make_network_session(sid_s2, &s2_assignment, my_r, NetworkMode::Sync)
+        .await
+        .context("creating the set-2 network session")?;
+    let params_s2 = SessionParameters::new(new_degree as u8, sid_s2, my_r, s2_roles)
+        .map_err(|e| anyhow::anyhow!("set-2 session parameters: {e:?}"))?;
+    let s2 = BaseSession::new(params_s2, net_s2, AesRng::from_random_seed())
+        .map_err(|e| anyhow::anyhow!("set-2 base session: {e:?}"))?;
+    s2.network()
+        .set_timeout_for_next_round(Duration::from_secs(cfg.round_timeout_secs))
+        .await;
+
+    // Dummy resharing preprocessing, sized by upstream's accounting. Scoped so
+    // the borrow of `s2` ends before it is moved into the reshare call.
+    let n_s1 = ts_roles.iter().filter(|p| p.is_set1()).count();
+    let (mut preproc64, mut preproc128) = {
+        let mut dp = DummyPreprocessing::new(42, &s2);
+        let req = ResharePreprocRequired::new(n_s1, params, oprf);
+        let p64 = InMemoryBasePreprocessing::<ResiduePoly<Z64, EXTENSION_DEGREE>> {
+            available_triples: Vec::new(),
+            available_randoms: dp
+                .next_random_vec(req.batch_params_64.randoms)
+                .map_err(|e| anyhow::anyhow!("Z64 randoms: {e:?}"))?,
+        };
+        let p128 = InMemoryBasePreprocessing::<ResiduePoly<Z128, EXTENSION_DEGREE>> {
+            available_triples: Vec::new(),
+            available_randoms: dp
+                .next_random_vec(req.batch_params_128.randoms)
+                .map_err(|e| anyhow::anyhow!("Z128 randoms: {e:?}"))?,
+        };
+        (p64, p128)
+    };
+
+    eprintln!(
+        "celar-kms-node[{}]: distributed upward reshare (degree {old_degree}->{new_degree}, {n} seats)…",
+        cfg.role
+    );
+    let started = Instant::now();
+    let new_share = SecureReshareSecretKeys::reshare_sk_two_sets_as_both_sets(
+        &mut (common, s2),
+        &mut preproc128,
+        &mut preproc64,
+        &mut my_share,
+        params,
+        oprf,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("distributed reshare failed: {e:?}"))?;
+    let wall_secs = started.elapsed().as_secs_f64();
+
+    fs::create_dir_all(out_dir)?;
+    let bytes = bincode::serialize(&new_share).context("serializing new degree-d share")?;
+    fs::write(out_dir.join(share_file(cfg.role)), &bytes)?;
+    let fragment = ReshareResultFragment {
+        schema: RESHARE_RESULT_SCHEMA.to_string(),
+        role: cfg.role,
+        parties: n,
+        old_degree,
+        new_degree,
+        new_share_sha256: sha256_hex(&bytes),
+        wall_secs,
+    };
+    fs::write(
+        out_dir.join(reshare_result_file(cfg.role)),
+        serde_json::to_string_pretty(&fragment)?,
+    )?;
+    println!(
+        "RESHARE-OK role={} degree {}->{} wall={:.2}s share {}",
+        cfg.role,
+        old_degree,
+        new_degree,
+        wall_secs,
+        out_dir.join(share_file(cfg.role)).display(),
+    );
+    eprintln!(
+        "celar-kms-node[{}]: new share written; STAYING UP to serve peers — \
+         stop only after all seats have finished.",
         cfg.role
     );
     let _ = server_handle.await;
