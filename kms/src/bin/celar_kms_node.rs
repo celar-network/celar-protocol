@@ -17,8 +17,8 @@ use clap::{Parser, Subcommand};
 
 use celar_kms::config::CommitteeConfig;
 use celar_kms::node::{
-    run_ceremony, run_distributed_decrypt, NodeConfig, PeerEntry, TlsPaths,
-    TranscriptFragment, FRAGMENT_SCHEMA,
+    run_ceremony, run_distributed_decrypt, run_distributed_reshare, NodeConfig, PeerEntry,
+    TlsPaths, TranscriptFragment, FRAGMENT_SCHEMA,
 };
 use celar_kms::transcript::{PartyRecord, Transcript};
 
@@ -116,6 +116,21 @@ enum Cmd {
         /// share files, pk, decrypt-inputs.json).
         #[arg(long)]
         inputs: PathBuf,
+    },
+    /// Run this node's side of a DISTRIBUTED upward reshare over mTLS — an
+    /// in-place degree raise on the committee (§7.5). Reads this seat's old
+    /// share from --in, writes its new degree-`new-degree` share to --out.
+    /// Blocks serving until stopped, like `run`.
+    ReshareUp {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long = "in", value_name = "DIR")]
+        in_dir: PathBuf,
+        #[arg(long = "out", value_name = "DIR")]
+        out_dir: PathBuf,
+        /// The new (higher) sharing degree to reshare the key up to.
+        #[arg(long)]
+        new_degree: usize,
     },
 }
 
@@ -398,6 +413,16 @@ async fn main() -> Result<()> {
             // DECRYPT-OK, then keeps serving until the process is stopped (peers
             // may still need this seat's robust-open messages).
             run_distributed_decrypt(&cfg, &inputs).await?;
+            Ok(())
+        }
+        Cmd::ReshareUp {
+            config,
+            in_dir,
+            out_dir,
+            new_degree,
+        } => {
+            let cfg = NodeConfig::load(&config)?;
+            run_distributed_reshare(&cfg, &in_dir, &out_dir, new_degree).await?;
             Ok(())
         }
     }
