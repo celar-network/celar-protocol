@@ -187,7 +187,15 @@ contract ConfidentialERC20 {
     /// absent. Claiming it would make integrators call
     /// functions that do not exist — the on-chain form of
     /// the same over-claim the project's copy rules
-    /// forbid. Restore it when those land.
+    /// forbid.
+    ///
+    /// Restore it only when EVERY must-row in the
+    /// conformance matrix is closed — a stricter condition
+    /// than the three items named above, which have landed.
+    /// Note that confidentialTotalSupply may require a
+    /// design decision first: supply aggregates are public
+    /// by design (G5), so a handle-typed total supply is
+    /// not merely unimplemented.
     function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
         return interfaceId == 0x01ffc9a7;
     }
