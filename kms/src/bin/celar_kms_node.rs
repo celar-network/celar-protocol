@@ -132,6 +132,24 @@ enum Cmd {
         #[arg(long)]
         new_degree: usize,
     },
+    /// Merge the per-seat distributed-reshare fragments
+    /// (`reshare_result_NNN.json`, one written by each seat's `reshare-up`)
+    /// into the canonical `upward-reshare.json` manifest that `decrypt-prepare`
+    /// and `decrypt-decoupled` consume. The single-process reshare writes that
+    /// manifest itself; the distributed path leaves each seat only its own
+    /// fragment, so this collects them (checking the committee agrees on
+    /// parties/degree) and takes the invariant pk_G + params from the genesis
+    /// transcript.
+    ReshareCollect {
+        /// Dir holding the collected `reshare_result_NNN.json` fragments AND
+        /// the new degree-`d` share files; the manifest is written here.
+        #[arg(long, default_value = "reshared")]
+        dir: PathBuf,
+        /// Genesis keys dir with `transcript.json` — the source of the pk_G
+        /// digest and params, both invariant across the reshare (§7.5).
+        #[arg(long)]
+        keys: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -423,6 +441,112 @@ async fn main() -> Result<()> {
         } => {
             let cfg = NodeConfig::load(&config)?;
             run_distributed_reshare(&cfg, &in_dir, &out_dir, new_degree).await?;
+            Ok(())
+        }
+        Cmd::ReshareCollect { dir, keys } => {
+            use celar_kms::node::{ReshareResultFragment, RESHARE_RESULT_SCHEMA};
+            use celar_kms::reshare::{UpwardReshareTranscript, UPWARD_RESHARE_SCHEMA};
+            use celar_kms::transcript::sha256_hex;
+
+            // Load every reshare fragment in role order.
+            let mut frags: Vec<ReshareResultFragment> = Vec::new();
+            for entry in fs::read_dir(&dir)? {
+                let path = entry?.path();
+                let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                if name.starts_with("reshare_result_") && name.ends_with(".json") {
+                    let f: ReshareResultFragment =
+                        serde_json::from_str(&fs::read_to_string(&path)?)
+                            .with_context(|| format!("parsing {}", path.display()))?;
+                    if f.schema != RESHARE_RESULT_SCHEMA {
+                        bail!("{}: unknown reshare-fragment schema {:?}", path.display(), f.schema);
+                    }
+                    frags.push(f);
+                }
+            }
+            if frags.is_empty() {
+                bail!("no reshare_result_*.json in {}", dir.display());
+            }
+            frags.sort_by_key(|f| f.role);
+
+            // The committee must agree on shape, and every seat must be present:
+            // a missing fragment means a seat never produced its new share.
+            let first = &frags[0];
+            let n = first.parties;
+            if frags.len() != n {
+                bail!(
+                    "found {}/{} reshare fragments — reshare incomplete, refusing to collect",
+                    frags.len(),
+                    n
+                );
+            }
+            let mut seen = std::collections::HashSet::new();
+            for f in &frags {
+                if f.parties != first.parties
+                    || f.old_degree != first.old_degree
+                    || f.new_degree != first.new_degree
+                {
+                    bail!(
+                        "reshare fragment {} disagrees on shape ({} parties, {}->{}) \
+                         vs role {}'s ({} parties, {}->{})",
+                        f.role, f.parties, f.old_degree, f.new_degree,
+                        first.role, first.parties, first.old_degree, first.new_degree
+                    );
+                }
+                if f.role == 0 || f.role > n {
+                    bail!("reshare fragment role {} out of range 1..={}", f.role, n);
+                }
+                if !seen.insert(f.role) {
+                    bail!("duplicate reshare fragment for role {}", f.role);
+                }
+            }
+
+            // pk_G and params are invariant across the reshare (§7.5) — take
+            // them from the genesis transcript, which also anchors the chain.
+            let genesis_path = keys.join("transcript.json");
+            let genesis = Transcript::load(&genesis_path)
+                .context("reading genesis transcript.json (for the invariant pk_G + params)")?;
+
+            // Each seat's new-share commitment becomes the new committee's record.
+            let parties: Vec<PartyRecord> = frags
+                .iter()
+                .map(|f| PartyRecord {
+                    role: f.role,
+                    share_commitment_sha256: f.new_share_sha256.clone(),
+                })
+                .collect();
+            let max_wall = frags.iter().map(|f| f.wall_secs).fold(0.0_f64, f64::max);
+
+            let transcript = UpwardReshareTranscript {
+                schema: UPWARD_RESHARE_SCHEMA.to_string(),
+                prev_transcript_sha256: sha256_hex(&fs::read(&genesis_path)?),
+                pk_g_sha256: genesis.pk_g_sha256.clone(),
+                old_committee_parties: n,
+                new_committee_parties: n,
+                old_degree: first.old_degree,
+                new_degree: first.new_degree,
+                params: genesis.dkg.params.clone(),
+                preprocessing: "dummy-randoms-distributed".to_string(),
+                parties,
+                wall_secs: max_wall,
+                created_unix: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+            };
+            transcript.save(&dir.join("upward-reshare.json"))?;
+            // Validate exactly as the single-process reshare does: the chain
+            // digest + pk_G invariant + degree raise, and that every new share
+            // file present in `dir` matches its recorded commitment.
+            transcript.verify_against_prev(&genesis_path)?;
+            transcript.verify_against_keys(&dir)?;
+            println!(
+                "RESHARE-COLLECT-OK {} fragments, degree {}->{}, pk_G {} → {}",
+                frags.len(),
+                transcript.old_degree,
+                transcript.new_degree,
+                transcript.pk_g_sha256,
+                dir.join("upward-reshare.json").display()
+            );
             Ok(())
         }
     }
