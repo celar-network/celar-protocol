@@ -722,24 +722,28 @@ pub async fn run_local_upward_reshare(
     intersection: usize,
 ) -> Result<UpwardReshareTranscript> {
     // Previous epoch: prefer a reshare artifact, else the genesis transcript.
-    let (prev_path, prev_pk, old_parties, prev_params) = {
+    let (prev_path, prev_pk, old_parties, prev_params, old_degree) = {
         let reshare_path = in_dir.join("reshare.json");
         let genesis_path = in_dir.join("transcript.json");
         if reshare_path.exists() {
             let p = ReshareTranscript::load(&reshare_path)?;
-            (reshare_path, p.pk_g_sha256, p.committee_parties, p.params)
+            // A same-set reshare leaves the sharing at the committee's threshold.
+            let d = CommitteeConfig { parties: p.committee_parties, ..Default::default() }
+                .session_threshold();
+            (reshare_path, p.pk_g_sha256, p.committee_parties, p.params, d)
         } else {
             let p = Transcript::load(&genesis_path)?;
-            (genesis_path, p.pk_g_sha256, p.parties.len(), p.dkg.params)
+            // Reconstruct at the genesis's ACTUAL recorded threshold, not the
+            // ⌊(c−1)/3⌋ default. The secure reshare robust-opens degree-2t values
+            // and so needs c ≥ 4t+1 (t ≤ ⌊(c−1)/4⌋), meaning a reshareable genesis
+            // is keyed below the default; assuming the default degree makes the
+            // set-1 reconstruction fail on exactly those (correct) low-t keys.
+            let d = p.committee.session_threshold;
+            (genesis_path, p.pk_g_sha256, p.parties.len(), p.dkg.params, d)
         }
     };
     let params_choice = params_choice_from_name(&prev_params)?;
     let params = dkg_params(params_choice);
-    let old_degree = CommitteeConfig {
-        parties: old_parties,
-        ..Default::default()
-    }
-    .session_threshold();
 
     // Load the old committee's shares (set 1) from files, in role order.
     let mut old_shares: Vec<PrivateKeySet<EXTENSION_DEGREE>> = Vec::with_capacity(old_parties);
