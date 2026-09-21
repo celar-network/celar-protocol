@@ -163,6 +163,17 @@ func (f *tokenFixture) balanceOf(
 	return common.BytesToHash(arr[:])
 }
 
+func (f *tokenFixture) totalSupplyHandle(t *testing.T) common.Hash {
+	t.Helper()
+	ret := f.send(t, f.owner, "confidentialTotalSupply")
+	out, err := f.abi.Unpack("confidentialTotalSupply", ret)
+	if err != nil {
+		t.Fatalf("unpack supply: %v", err)
+	}
+	arr := out[0].([32]byte)
+	return common.BytesToHash(arr[:])
+}
+
 // A reverted call leaves the context's gas meter in a state
 // that panics on the next use, so any test expecting a
 // revert must take a fresh context before continuing.
