@@ -1,0 +1,13 @@
+{
+  "_comment": "Shared cross-language vector for the transcript endorsement digest. The inputs are fixed; each implementation records the digest it computes. They must agree. The tag deliberately contains an ampersand and an angle bracket: those are the characters whose JSON escaping differs between the two encoders, so a vector without them would pass while real input failed.",
+  "input": {
+    "committee_parties": 30,
+    "session_id": 7,
+    "params": "secure-large",
+    "tag": "celar-genesis<&>v1",
+    "pk_g_sha256": "3f786850e387550fdab836ed7e6dc881de23001b3f786850e387550fdab836ed",
+    "roster_sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+  },
+  "digest_go": "7776ed0944058c8150754e20a89090ec46697af53c4f28222604aa24546e0374",
+  "digest_kms": ""
+}
