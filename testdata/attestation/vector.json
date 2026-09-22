@@ -1,0 +1,13 @@
+{
+  "_comment": "Shared cross-language vector for the attestation signing preimage. Inputs are fixed; each implementation records what it computes. The stream position uses DIFFERENT values for txIndex and logIndex on purpose: equal values would let a packing that swapped the two fields pass.",
+  "input": {
+    "chain_id": 23529,
+    "height": 1234567,
+    "tx_index": 7,
+    "log_index": 3,
+    "result_handle": "1111111111111111111111111111111111111111111111111111111111111111",
+    "ct_digest": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "preimage_keccak_go": "e5d2f395c854f775d296ce3bd24e7589e955451064d98d1b21e30cfef7886952",
+  "preimage_keccak_coprocessor": ""
+}
