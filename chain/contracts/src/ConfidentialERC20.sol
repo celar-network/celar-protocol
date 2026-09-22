@@ -150,7 +150,23 @@ contract ConfidentialERC20 {
     /// amount would make Celar transfers invisible.
     event ConfidentialTransfer(address indexed from, address indexed to, bytes32 indexed amount);
 
-    /// SHOULD in the EIP; emitted on the reveal path.
+    /// SHOULD in the EIP. Emitted on the supply reveal, and
+    /// ONLY there — which needs explaining, because the
+    /// obvious reading is that every disclosure emits one.
+    ///
+    /// A user amount is disclosed by the committee, off
+    /// chain, after a request. The plaintext never returns
+    /// to this contract: revealTotalSupply hands back a
+    /// request id, not a value, and no callback path exists
+    /// to carry one. So for user amounts this event is not
+    /// merely unimplemented, it is unemittable as the system
+    /// is built — a contract cannot announce a number it
+    /// never learns.
+    ///
+    /// The supply is the one case where it holds both sides.
+    /// Aggregates are public by design, so the plaintext
+    /// sits in totalSupplyPlain beside the handle, and the
+    /// event can state the binding truthfully.
     event AmountDisclosed(bytes32 indexed handle, uint64 amount);
 
     error NotMinter();
@@ -227,6 +243,11 @@ contract ConfidentialERC20 {
     /// wildcard, so "public" needed a mechanism, not just
     /// a comment.
     function revealTotalSupply() external returns (bytes32) {
+        // Announced here rather than at mint: this is the
+        // call that makes the handle readable, so it is the
+        // moment a disclosure actually occurs. Emitting at
+        // mint would claim a disclosure nobody requested.
+        emit AmountDisclosed(euint64.unwrap(_totalSupply), totalSupplyPlain);
         return TFHE.requestReveal(_totalSupply);
     }
 
