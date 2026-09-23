@@ -100,10 +100,18 @@ impl CommitteeRoster {
     /// Canonical digest the ceremony artifacts commit to. Canonical form =
     /// compact JSON of the roster with members sorted by role (serde
     /// preserves struct field order, so this is deterministic).
-    pub fn digest(&self) -> Result<String> {
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
         let mut sorted = self.clone();
         sorted.members.sort_by_key(|m| m.role);
-        Ok(sha256_hex(serde_json::to_string(&sorted)?.as_bytes()))
+        Ok(serde_json::to_string(&sorted)?.into_bytes())
+    }
+
+    /// SHA-256 over `canonical_bytes()`. The canonical serialization is exposed
+    /// (E72) so a submission can carry THOSE exact bytes for the chain to hash
+    /// against the anchored `roster_sha256` and then parse for pubkeys — no
+    /// cross-language canonicaliser that must agree with serde_json forever.
+    pub fn digest(&self) -> Result<String> {
+        Ok(sha256_hex(&self.canonical_bytes()?))
     }
 
     pub fn parties(&self) -> usize {
