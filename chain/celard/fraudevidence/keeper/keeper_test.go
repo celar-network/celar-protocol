@@ -11,12 +11,19 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 )
 
+// Arbitrary here: these tests exercise the store, not signature
+// verification. It stops being arbitrary for any test that goes through the
+// message handler - that one must use the same chain id its fixture signs
+// with, or every attestation is rejected for a correct reason and the test
+// proves nothing about what it meant to check.
+const testChainID = 23529
+
 func newKeeper(t *testing.T) (keeper.Keeper, sdk.Context) {
 	t.Helper()
 	storeKey := storetypes.NewKVStoreKey(types.StoreKey)
 	tKey := storetypes.NewTransientStoreKey("transient_test")
 	ctx := testutil.DefaultContext(storeKey, tKey) //nolint: staticcheck
-	return keeper.NewKeeper(storeKey), ctx
+	return keeper.NewKeeper(storeKey, testChainID), ctx
 }
 
 func verdict(evidence string) types.Verdict {

@@ -39,6 +39,15 @@ func (m msgServer) SubmitAttestation(
 ) (*types.MsgSubmitAttestationResponse, error) {
 	ctx := sdk.UnwrapSDKContext(goCtx)
 
+	// Verified before it is recorded, and this is the whole point of the
+	// handler. Until this check existed the module was deliberately left
+	// unregistered in the app: a store that accepts unauthenticated claims is
+	// safe only while nothing can reach it, and that is not a property to rely
+	// on twice.
+	if err := types.VerifyAttestation(m.k.ChainID(), &msg.Attestation); err != nil {
+		return nil, err
+	}
+
 	existed, err := m.k.RecordAttestation(ctx, msg.Attestation)
 	if err != nil {
 		return nil, err

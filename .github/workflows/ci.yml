@@ -51,8 +51,15 @@ jobs:
       - name: test our packages
         working-directory: chain/celard
         # -tags=test is required: the upstream test config helpers are gated
-        # behind it and panic without it
-        run: go test -tags=test ./precompiles/... ./precisebank/...
+        # behind it and panic without it.
+        #
+        # epochcommit and fraudevidence were added after this list was written
+        # and nobody extended it, so their suites had never run here - including
+        # two cross-language digest vectors and the attestation signature
+        # verification. That is the same omission the note on the token step
+        # below records, reintroduced by two later modules. Name every package
+        # we own, and add to this line when a module appears.
+        run: go test -tags=test ./precompiles/... ./precisebank/... ./epochcommit/... ./fraudevidence/...
 
       - name: test the confidential token
         working-directory: chain/celard
