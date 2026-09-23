@@ -10,4 +10,5 @@ pub mod exec;
 pub mod ingest;
 pub mod opstream;
 pub(crate) mod preimage;
+pub mod sign;
 pub mod rerand;

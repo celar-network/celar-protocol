@@ -4,6 +4,9 @@ package types
 
 import (
 	"crypto/ecdsa"
+	"encoding/hex"
+	"encoding/json"
+	"os"
 	"math/big"
 	"testing"
 
@@ -11,6 +14,43 @@ import (
 )
 
 const testChainID = 23529
+
+type attVectorFile struct {
+	Input struct {
+		ChainID      uint64 `json:"chain_id"`
+		Height       uint64 `json:"height"`
+		TxIndex      uint32 `json:"tx_index"`
+		LogIndex     uint32 `json:"log_index"`
+		ResultHandle string `json:"result_handle"`
+		CtDigest     string `json:"ct_digest"`
+	} `json:"input"`
+	Signing struct {
+		CoprocessorID string `json:"coprocessor_id"`
+		Signature     string `json:"signature"`
+	} `json:"signing"`
+}
+
+func loadAttVector(t *testing.T) attVectorFile {
+	t.Helper()
+	raw, err := os.ReadFile("../../../../testdata/attestation/vector.json")
+	if err != nil {
+		t.Fatalf("read vector: %v", err)
+	}
+	var v attVectorFile
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatalf("parse vector: %v", err)
+	}
+	return v
+}
+
+func mustHex(t *testing.T, s string) []byte {
+	t.Helper()
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		t.Fatalf("bad hex %q: %v", s, err)
+	}
+	return b
+}
 
 func attestationSignedBy(t *testing.T, key *ecdsa.PrivateKey) *Attestation {
 	t.Helper()
@@ -101,5 +141,48 @@ func TestUnknownCommitmentSchemeIsRefused(t *testing.T) {
 	a.EnvVersion = 2
 	if err := VerifyAttestation(testChainID, a); err == nil {
 		t.Fatal("an unverifiable commitment scheme was accepted")
+	}
+}
+
+// The cross-language check that matters: a signature produced by the OTHER
+// implementation must verify here.
+//
+// The preimage vector proves the two sides hash the same bytes. It says
+// nothing about the signature's encoding, the recovery id's convention, or
+// low-s - three things each side implements separately, where a disagreement
+// rejects honest work and looks like a fault in whichever component is
+// examined second.
+func TestSignatureFromTheProducingSideVerifies(t *testing.T) {
+	v := loadAttVector(t)
+	if v.Signing.Signature == "" {
+		t.Skip("producing side has not recorded a signature yet")
+	}
+	sig, err := hex.DecodeString(v.Signing.Signature)
+	if err != nil {
+		t.Fatalf("signature is not hex: %v", err)
+	}
+	id, err := hex.DecodeString(v.Signing.CoprocessorID)
+	if err != nil {
+		t.Fatalf("coprocessor id is not hex: %v", err)
+	}
+
+	a := &Attestation{
+		Height: v.Input.Height, TxIndex: v.Input.TxIndex, LogIndex: v.Input.LogIndex,
+		ResultHandle: mustHex(t, v.Input.ResultHandle),
+		CtDigest:     mustHex(t, v.Input.CtDigest),
+		EnvVersion:   EnvDigestAndSignature,
+		CoprocessorId: id,
+		Signature:     sig,
+	}
+	if err := VerifyAttestation(v.Input.ChainID, a); err != nil {
+		t.Fatalf("a signature from the producing side was rejected here: %v", err)
+	}
+
+	// And the verifier must not accept a tampered one, or the test above
+	// would pass for a verifier that accepts everything.
+	a.Signature = append([]byte(nil), sig...)
+	a.Signature[0] ^= 0x01
+	if err := VerifyAttestation(v.Input.ChainID, a); err == nil {
+		t.Fatal("a corrupted signature was accepted")
 	}
 }
