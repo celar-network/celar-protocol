@@ -139,13 +139,20 @@ pub async fn run_local_threshold_decrypt(
     shares_dir: &Path,
     value: u64,
     session_kind: DecryptSession,
+    session_threshold: Option<usize>,
     out_path: &Path,
 ) -> Result<DecryptOutput> {
-    // Committee shape from the genesis transcript beside the pk.
+    // Committee shape from the genesis transcript beside the pk. The session
+    // threshold the ceremony actually sharded at is NOT recoverable from the
+    // transcript (collect records the ⌊(c−1)/3⌋ default and the fragment does
+    // not carry it), so it may be supplied explicitly; without it the default
+    // is assumed — which is wrong for a committee keyed below n/3 (e.g. a c=50
+    // secure ceremony at the t≤n/4 secure cap).
     let transcript = Transcript::load(&keys_dir.join("transcript.json"))?;
     let parties = transcript.committee.parties;
     let cfg = CommitteeConfig {
         parties,
+        session_threshold,
         ..Default::default()
     };
     cfg.validate()?;
