@@ -1409,6 +1409,147 @@ pub async fn run_distributed_reshare(
     Ok(fragment)
 }
 
+// ---------------------------------------------------------------- distributed refresh (proactive)
+
+/// One seat's distributed same-set refresh result — the refreshed share's
+/// digest, so the operator can confirm every seat refreshed one consistent key
+/// at the unchanged degree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefreshResultFragment {
+    pub schema: String,
+    pub role: usize,
+    pub parties: usize,
+    pub degree: usize,
+    pub new_share_sha256: String,
+    pub wall_secs: f64,
+}
+
+pub const REFRESH_RESULT_SCHEMA: &str = "celar-refresh-result/v1";
+
+pub fn refresh_result_file(role: usize) -> String {
+    format!("refresh_result_{role:03}.json")
+}
+
+/// Run this seat's side of a DISTRIBUTED same-set PROACTIVE REFRESH over mTLS —
+/// the committee re-randomizes its shares of the SAME key at the SAME degree
+/// (pk_G and the sharing degree are both invariant; only the share values
+/// change), so a mobile adversary must compromise a threshold WITHIN one epoch
+/// rather than accumulating shares across epochs. Unlike the single-process
+/// `run_local_reshare` (test harness, PRSS sessions that cannot reach genesis
+/// scale), this runs over the real mTLS `BaseSession` — the same transport the
+/// ceremony and the distributed reshare use — so it carries no PRSS ceiling.
+/// Reads this seat's current share from `in_dir`, writes its refreshed share to
+/// `out_dir`.
+pub async fn run_distributed_refresh(
+    cfg: &NodeConfig,
+    in_dir: &Path,
+    out_dir: &Path,
+) -> Result<RefreshResultFragment> {
+    use threshold_execution::tfhe_internals::private_keysets::PrivateKeySet;
+
+    cfg.validate()?;
+    let n = cfg.committee.parties;
+    // Same-set refresh: the sharing degree is UNCHANGED — the committee's
+    // session threshold (honored from the config, so a committee keyed below
+    // the ⌊(c−1)/3⌋ default is used correctly).
+    let degree = cfg.committee.session_threshold();
+    let params = match cfg.committee.params {
+        crate::config::ParamsChoice::Test => {
+            threshold_execution::tfhe_internals::parameters::PARAMS_TEST_BK_SNS
+        }
+        crate::config::ParamsChoice::NistP32SnsFglwe => {
+            threshold_execution::tfhe_internals::parameters::NIST_PARAMS_P32_SNS_FGLWE
+        }
+    };
+
+    // This seat's current share (the refresh input; Some for a live seat).
+    let mut my_share: Option<PrivateKeySet<EXTENSION_DEGREE>> = Some(bincode::deserialize(
+        &fs::read(in_dir.join(share_file(cfg.role)))
+            .context("reading this seat's current share")?,
+    )?);
+    let oprf = my_share
+        .as_ref()
+        .map(|s| s.oprf_secret_key_share.is_some())
+        .unwrap_or(false);
+
+    // Single mTLS BaseSession at the committee threshold (Sync) — no PRSS,
+    // unlike the single-process harness; same bring-up as the distributed
+    // decrypt.
+    let sid = SessionId::from(cfg.session_id as u128);
+    let (_manager, server_handle, mut base) =
+        bring_up_session(cfg, sid, degree as u8, NetworkMode::Sync).await?;
+    base.network()
+        .set_timeout_for_next_round(Duration::from_secs(cfg.round_timeout_secs))
+        .await;
+
+    // Dummy resharing preprocessing (randoms only, both rings), sized for the
+    // whole committee. Scoped so the borrow of `base` ends before the reshare.
+    let (mut preproc64, mut preproc128) = {
+        let mut dp = DummyPreprocessing::new(42, &base);
+        let req = ResharePreprocRequired::new(n, params, oprf);
+        let p64 = InMemoryBasePreprocessing::<ResiduePoly<Z64, EXTENSION_DEGREE>> {
+            available_triples: Vec::new(),
+            available_randoms: dp
+                .next_random_vec(req.batch_params_64.randoms)
+                .map_err(|e| anyhow::anyhow!("Z64 randoms: {e:?}"))?,
+        };
+        let p128 = InMemoryBasePreprocessing::<ResiduePoly<Z128, EXTENSION_DEGREE>> {
+            available_triples: Vec::new(),
+            available_randoms: dp
+                .next_random_vec(req.batch_params_128.randoms)
+                .map_err(|e| anyhow::anyhow!("Z128 randoms: {e:?}"))?,
+        };
+        (p64, p128)
+    };
+
+    eprintln!(
+        "celar-kms-node[{}]: distributed same-set refresh (degree {degree}, {n} seats)…",
+        cfg.role
+    );
+    let started = Instant::now();
+    let new_share = SecureReshareSecretKeys::reshare_sk_same_set(
+        &mut base,
+        &mut preproc128,
+        &mut preproc64,
+        &mut my_share,
+        params,
+        oprf,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("distributed same-set refresh failed: {e:?}"))?;
+    let wall_secs = started.elapsed().as_secs_f64();
+
+    fs::create_dir_all(out_dir)?;
+    let bytes = bincode::serialize(&new_share).context("serializing refreshed share")?;
+    fs::write(out_dir.join(share_file(cfg.role)), &bytes)?;
+    let fragment = RefreshResultFragment {
+        schema: REFRESH_RESULT_SCHEMA.to_string(),
+        role: cfg.role,
+        parties: n,
+        degree,
+        new_share_sha256: sha256_hex(&bytes),
+        wall_secs,
+    };
+    fs::write(
+        out_dir.join(refresh_result_file(cfg.role)),
+        serde_json::to_string_pretty(&fragment)?,
+    )?;
+    println!(
+        "REFRESH-OK role={} degree={} wall={:.2}s share {}",
+        cfg.role,
+        degree,
+        wall_secs,
+        out_dir.join(share_file(cfg.role)).display(),
+    );
+    eprintln!(
+        "celar-kms-node[{}]: refreshed share written; STAYING UP to serve peers — \
+         stop only after all seats have finished.",
+        cfg.role
+    );
+    let _ = server_handle.await;
+    Ok(fragment)
+}
+
 #[cfg(test)]
 mod endorsement_tests {
     use super::*;

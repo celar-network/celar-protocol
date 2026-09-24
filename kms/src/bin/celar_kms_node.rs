@@ -17,8 +17,8 @@ use clap::{Parser, Subcommand};
 
 use celar_kms::config::CommitteeConfig;
 use celar_kms::node::{
-    run_ceremony, run_distributed_decrypt, run_distributed_reshare, NodeConfig, PeerEntry,
-    TlsPaths, TranscriptFragment, FRAGMENT_SCHEMA,
+    run_ceremony, run_distributed_decrypt, run_distributed_refresh, run_distributed_reshare,
+    NodeConfig, PeerEntry, TlsPaths, TranscriptFragment, FRAGMENT_SCHEMA,
 };
 use celar_kms::transcript::{PartyRecord, Transcript};
 
@@ -131,6 +131,19 @@ enum Cmd {
         /// The new (higher) sharing degree to reshare the key up to.
         #[arg(long)]
         new_degree: usize,
+    },
+    /// Run this node's side of a DISTRIBUTED same-set PROACTIVE REFRESH over
+    /// mTLS — re-randomize the committee's shares of the SAME key at the SAME
+    /// degree (pk_G and degree invariant), so a mobile adversary must compromise
+    /// a threshold within one epoch. Reads this seat's current share from --in,
+    /// writes its refreshed share to --out. Blocks serving until stopped.
+    ReshareRefresh {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long = "in", value_name = "DIR")]
+        in_dir: PathBuf,
+        #[arg(long = "out", value_name = "DIR")]
+        out_dir: PathBuf,
     },
     /// Merge the per-seat distributed-reshare fragments
     /// (`reshare_result_NNN.json`, one written by each seat's `reshare-up`)
@@ -441,6 +454,11 @@ async fn main() -> Result<()> {
         } => {
             let cfg = NodeConfig::load(&config)?;
             run_distributed_reshare(&cfg, &in_dir, &out_dir, new_degree).await?;
+            Ok(())
+        }
+        Cmd::ReshareRefresh { config, in_dir, out_dir } => {
+            let cfg = NodeConfig::load(&config)?;
+            run_distributed_refresh(&cfg, &in_dir, &out_dir).await?;
             Ok(())
         }
         Cmd::ReshareCollect { dir, keys } => {
