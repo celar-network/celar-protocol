@@ -258,6 +258,13 @@ pub struct TranscriptFragment {
     pub schema: String,
     pub role: usize,
     pub committee_parties: usize,
+    /// The session corruption threshold this seat sharded at. Lets `collect`
+    /// record the REAL t in the transcript rather than the ⌊(c−1)/3⌋ default,
+    /// so `decrypt`/`reshare` need no `--session-threshold` flag. `serde(default)`
+    /// → `None` on legacy fragments that predate this field (collect then falls
+    /// back to the default, preserving old behaviour).
+    #[serde(default)]
+    pub session_threshold: Option<usize>,
     pub session_id: u64,
     pub params: String,
     pub tag: String,
@@ -959,6 +966,7 @@ pub async fn run_ceremony(cfg: &NodeConfig) -> Result<TranscriptFragment> {
         schema: FRAGMENT_SCHEMA.to_string(),
         role: cfg.role,
         committee_parties: cfg.committee.parties,
+        session_threshold: Some(cfg.committee.session_threshold()),
         session_id: cfg.session_id,
         params: cfg.committee.params.name().to_string(),
         tag: cfg.committee.tag.clone(),
@@ -1513,6 +1521,7 @@ mod endorsement_tests {
             schema: FRAGMENT_SCHEMA.into(),
             role,
             committee_parties: 8,
+            session_threshold: Some(2),
             session_id: 1,
             params: "PARAMS_TEST_BK_SNS".into(),
             tag: "t".into(),
