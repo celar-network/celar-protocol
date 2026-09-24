@@ -107,7 +107,7 @@ impl CommitteeRoster {
     }
 
     /// SHA-256 over `canonical_bytes()`. The canonical serialization is exposed
-    /// (E72) so a submission can carry THOSE exact bytes for the chain to hash
+    /// so a submission can carry THOSE exact bytes for the chain to hash
     /// against the anchored `roster_sha256` and then parse for pubkeys — no
     /// cross-language canonicaliser that must agree with serde_json forever.
     pub fn digest(&self) -> Result<String> {
