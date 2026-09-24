@@ -54,7 +54,7 @@ use std::collections::HashSet;
 
 use aes_prng::AesRng;
 use anyhow::{bail, Result};
-use rand::{CryptoRng, Rng};
+use rand::{CryptoRng, Rng, SeedableRng};
 use sha2::{Digest, Sha256};
 
 use algebra::base_ring::Z128;
@@ -377,6 +377,37 @@ pub fn build_honest_batch(
     builder.seal()
 }
 
+/// Build a sealed batch where each seat samples its contribution from its OWN
+/// per-seat seed (`vrf_mixed_contribution_seed`), rather than one shared local
+/// RNG as `build_honest_batch` uses. The production path derives each seed from
+/// the seat's VRF output (node side, `node::vrf_contribution_output`); this
+/// layer just consumes the seeds and stays key-agnostic. `seat_seeds` is
+/// `(one-based seat, 32-byte mixed seed)`.
+pub fn build_batch_from_seeds(
+    parties: usize,
+    degree: usize,
+    seat_seeds: &[(usize, [u8; 32])],
+) -> Result<SealedMaskBatch> {
+    let mut builder = MaskBatchBuilder::new(parties, degree);
+    for (seat, seed) in seat_seeds {
+        // Per-seat deterministic RNG keyed by the VRF-mixed seed. AesRng's seed
+        // is the 128-bit AES key, so take the first 16 bytes of the 256-bit
+        // mixed seed (full 128-bit entropy). If the crate's `Seed` type is
+        // [u8; 32], pass `*seed` here instead.
+        let mut key = [0u8; 16];
+        key.copy_from_slice(&seed[..16]);
+        let mut rng = AesRng::from_seed(key);
+        let c = MaskContribution::sample_and_deal(
+            &mut rng,
+            Role::indexed_from_one(*seat),
+            parties,
+            degree,
+        )?;
+        builder.add(c)?;
+    }
+    builder.seal()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -404,6 +435,21 @@ mod tests {
             vrf_mixed_contribution_seed(b"ab", &ent),
             vrf_mixed_contribution_seed(b"a", &ent),
         );
+    }
+
+    #[test]
+    fn seeded_batch_is_deterministic_in_seeds() {
+        let seeds: Vec<(usize, [u8; 32])> =
+            (1..=DEGREE + 1).map(|s| (s, [s as u8; 32])).collect();
+        let a = build_batch_from_seeds(PARTIES, DEGREE, &seeds).unwrap();
+        // Same per-seat seeds → same batch (deterministic).
+        let b = build_batch_from_seeds(PARTIES, DEGREE, &seeds).unwrap();
+        assert_eq!(a.batch_commitment(), b.batch_commitment());
+        // Different seeds → different batch.
+        let seeds2: Vec<(usize, [u8; 32])> =
+            (1..=DEGREE + 1).map(|s| (s, [(s + 100) as u8; 32])).collect();
+        let c = build_batch_from_seeds(PARTIES, DEGREE, &seeds2).unwrap();
+        assert_ne!(a.batch_commitment(), c.batch_commitment());
     }
 
     #[test]
