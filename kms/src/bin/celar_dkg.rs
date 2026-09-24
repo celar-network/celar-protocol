@@ -163,6 +163,12 @@ enum Cmd {
         shares_dir: PathBuf,
         #[arg(long, default_value_t = 42)]
         value: u64,
+        /// Dir with the seats' ed25519 operational signing keys
+        /// (`signing_party{i}.key`, as `celar-certs` writes). When given, each
+        /// seat's flooding-mask contribution is VRF-seeded under its own key
+        /// (SR9 item 5); omit for a dev shared-RNG batch.
+        #[arg(long)]
+        signing_keys_dir: Option<PathBuf>,
         /// Output dir for the per-seat inputs (distribute one copy to each seat).
         #[arg(long, default_value = "decrypt-inputs")]
         out: PathBuf,
@@ -480,6 +486,7 @@ async fn main() -> Result<()> {
             keys_dir,
             shares_dir,
             value,
+            signing_keys_dir,
             out,
         } => {
             eprintln!(
@@ -491,6 +498,7 @@ async fn main() -> Result<()> {
                 &keys_dir,
                 &shares_dir,
                 value,
+                signing_keys_dir.as_deref(),
                 &out,
             )?;
             println!(
