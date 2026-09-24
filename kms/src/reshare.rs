@@ -71,6 +71,13 @@ pub struct ReshareTranscript {
     /// Invariant across epochs; copied from (and checked against) genesis.
     pub pk_g_sha256: String,
     pub committee_parties: usize,
+    /// Session threshold (degree) this epoch sharded at, recorded so a later
+    /// reshare/decrypt reads it instead of assuming the ⌊(c−1)/3⌋ default —
+    /// the reshare-chain analogue of the genesis transcript's recorded t.
+    /// Optional (serde-default) so pre-existing reshare.json files parse as
+    /// `None` and fall back to the default, exactly as before.
+    #[serde(default)]
+    pub session_threshold: Option<usize>,
     pub params: String,
     /// "dummy-randoms" until the secure dual-ring offline phase lands.
     pub preprocessing: String,
@@ -216,18 +223,25 @@ pub async fn run_local_reshare(
         );
     }
     // Previous epoch artifact: prefer reshare.json (later epoch) over genesis.
-    let (prev_path, prev_pk, prev_parties_records, prev_params, epoch) = {
+    let (prev_path, prev_pk, prev_parties_records, prev_params, epoch, prev_threshold) = {
         let reshare_path = in_dir.join("reshare.json");
         let genesis_path = in_dir.join("transcript.json");
         if reshare_path.exists() {
             let p = ReshareTranscript::load(&reshare_path)?;
-            (reshare_path, p.pk_g_sha256, p.parties, p.params, p.epoch + 1)
+            (reshare_path, p.pk_g_sha256, p.parties, p.params, p.epoch + 1, p.session_threshold)
         } else {
             let p = Transcript::load(&genesis_path)?;
-            (genesis_path, p.pk_g_sha256, p.parties, p.dkg.params, 1)
+            let t = p.committee.session_threshold;
+            (genesis_path, p.pk_g_sha256, p.parties, p.dkg.params, 1, Some(t))
         }
     };
     let parties = prev_parties_records.len();
+    // Prefer the explicit flag; else the threshold recorded in the previous
+    // epoch's artifact — genesis always records it, a reshare.json records it
+    // when written by this version (else `None` → the ⌊(c−1)/3⌋ default). So a
+    // chain whose artifacts carry t needs no --session-threshold flag, matching
+    // decrypt; legacy artifacts keep the flag as their fallback.
+    let session_threshold = session_threshold.or(prev_threshold);
     if let Some(d) = drop_role {
         if d == 0 || d > parties {
             bail!("--drop-role {d} out of range 1..={parties}");
@@ -462,6 +476,7 @@ pub async fn run_local_reshare(
         prev_transcript_sha256: sha256_hex(&fs::read(&prev_path)?),
         pk_g_sha256: prev_pk,
         committee_parties: parties,
+        session_threshold: Some(cfg.session_threshold()),
         params: prev_params,
         preprocessing: match preproc {
             PreprocMode::SecureLarge => "secure-large-randoms".to_string(),
@@ -730,8 +745,13 @@ pub async fn run_local_upward_reshare(
         if reshare_path.exists() {
             let p = ReshareTranscript::load(&reshare_path)?;
             // A same-set reshare leaves the sharing at the committee's threshold.
-            let d = CommitteeConfig { parties: p.committee_parties, ..Default::default() }
-                .session_threshold();
+            // Prefer the recorded value; a reshare.json predating that field falls
+            // back to the ⌊(c−1)/3⌋ default (wrong only for a low-t chain, which is
+            // exactly why newer artifacts record it).
+            let d = p.session_threshold.unwrap_or_else(|| {
+                CommitteeConfig { parties: p.committee_parties, ..Default::default() }
+                    .session_threshold()
+            });
             (reshare_path, p.pk_g_sha256, p.committee_parties, p.params, d)
         } else {
             let p = Transcript::load(&genesis_path)?;
@@ -901,6 +921,7 @@ mod upward_reshare_tests {
             prev_transcript_sha256: "genesis".to_string(),
             pk_g_sha256: "pkg-fixture".to_string(),
             committee_parties: old_parties,
+            session_threshold: None,
             params: "PARAMS_TEST_BK_SNS".to_string(),
             preprocessing: "dummy-randoms".to_string(),
             recovered_role: None,
