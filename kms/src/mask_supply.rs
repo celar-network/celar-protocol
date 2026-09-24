@@ -326,6 +326,36 @@ impl SealedMaskBatch {
     }
 }
 
+/// Domain separator for the VRF-mixed contribution seed (SR9 / adopt-list item 5).
+pub const VRF_SEED_DOMAIN: &[u8] = b"celar.kms.mask.contribution-seed.v1";
+
+/// Derive a per-seat contribution seed that stays unpredictable to a COALITION
+/// even if the fleet's local RNG fails (the Debian-OpenSSL / low-entropy class
+/// that variance/χ² and the E55 range check are structurally blind to). The seat
+/// mixes the output of a VRF under its OWN key over `epoch ‖ index` with its
+/// local entropy:
+///
+/// ```text
+///   seed = SHA-256( DOMAIN ‖ len(vrf_output) ‖ vrf_output ‖ local_entropy )
+/// ```
+///
+/// A fleet-wide local-RNG failure then degrades to "predictable to the seat"
+/// (which holds the VRF key) rather than "predictable to the coalition". The
+/// length prefix keeps `vrf_output ‖ local_entropy` unambiguous for any
+/// `vrf_output` length. This layer is KEY-AGNOSTIC: `vrf_output` is computed by
+/// the caller, which holds the seat's key, so the VRF/key choice is not baked in
+/// here (design: `doc/engg/tasks/vrf-contribution-seeds/design.md`).
+pub fn vrf_mixed_contribution_seed(vrf_output: &[u8], local_entropy: &[u8; 32]) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(VRF_SEED_DOMAIN);
+    h.update((vrf_output.len() as u64).to_be_bytes());
+    h.update(vrf_output);
+    h.update(local_entropy);
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&h.finalize());
+    seed
+}
+
 /// Convenience for the honest all-seats path and for tests: build a sealed batch
 /// from `contributors` seats each sampling and dealing one contribution.
 pub fn build_honest_batch(
@@ -355,6 +385,26 @@ mod tests {
 
     const PARTIES: usize = 8;
     const DEGREE: usize = 3; // quorum = 4
+
+    #[test]
+    fn vrf_mixed_seed_is_deterministic_and_input_sensitive() {
+        let vrf = b"vrf-output-bytes";
+        let ent = [7u8; 32];
+        let a = vrf_mixed_contribution_seed(vrf, &ent);
+        // Deterministic in (vrf_output, local_entropy).
+        assert_eq!(a, vrf_mixed_contribution_seed(vrf, &ent));
+        // A different VRF output changes the seed — a coalition without the
+        // seat's key cannot predict it even if local_entropy is known/broken.
+        assert_ne!(a, vrf_mixed_contribution_seed(b"other-vrf-output", &ent));
+        // A different local entropy changes the seed.
+        assert_ne!(a, vrf_mixed_contribution_seed(vrf, &[8u8; 32]));
+        // Length prefix: ("ab", ent) must differ from ("a", ent) so the
+        // vrf_output/local_entropy boundary is never ambiguous.
+        assert_ne!(
+            vrf_mixed_contribution_seed(b"ab", &ent),
+            vrf_mixed_contribution_seed(b"a", &ent),
+        );
+    }
 
     #[test]
     fn range_constants_mirror_budget() {
