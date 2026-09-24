@@ -143,13 +143,14 @@ pub async fn run_local_threshold_decrypt(
     out_path: &Path,
 ) -> Result<DecryptOutput> {
     // Committee shape from the genesis transcript beside the pk. The session
-    // threshold the ceremony actually sharded at is NOT recoverable from the
-    // transcript (collect records the ⌊(c−1)/3⌋ default and the fragment does
-    // not carry it), so it may be supplied explicitly; without it the default
-    // is assumed — which is wrong for a committee keyed below n/3 (e.g. a c=50
-    // secure ceremony at the t≤n/4 secure cap).
+    // threshold the ceremony sharded at is now recorded in the transcript by
+    // `collect` (from the fragments, E77), so prefer the explicit flag, else the
+    // transcript's recorded t — a ceremony that recorded it needs no flag. Legacy
+    // transcripts (pre-E77, no recorded t) carry the ⌊(c−1)/3⌋ default here, so
+    // the flag remains their fallback for a committee keyed below n/3.
     let transcript = Transcript::load(&keys_dir.join("transcript.json"))?;
     let parties = transcript.committee.parties;
+    let session_threshold = session_threshold.or(Some(transcript.committee.session_threshold));
     let cfg = CommitteeConfig {
         parties,
         session_threshold,

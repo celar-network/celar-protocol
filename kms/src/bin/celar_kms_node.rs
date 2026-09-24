@@ -376,8 +376,12 @@ async fn main() -> Result<()> {
                 if (f.params != first.params)
                     || (f.tag != first.tag)
                     || (f.session_id != first.session_id)
+                    || (f.session_threshold != first.session_threshold)
                 {
-                    bail!("fragment {} disagrees on params/tag/session_id", f.role);
+                    bail!(
+                        "fragment {} disagrees on params/tag/session_id/session_threshold",
+                        f.role
+                    );
                 }
                 // either every node ran under the SAME roster, or none did.
                 if f.roster_sha256 != first.roster_sha256 {
@@ -393,6 +397,11 @@ async fn main() -> Result<()> {
                 parties: c,
                 preprocessing: celar_kms::config::PreprocMode::Secure,
                 tag: first.tag.clone(),
+                // Record the REAL threshold the ceremony sharded at (from the
+                // fragments) so the transcript is self-describing; `None` on
+                // legacy fragments falls back to the ⌊(c−1)/3⌋ default, as
+                // before (E77).
+                session_threshold: first.session_threshold,
                 ..Default::default()
             };
             let parties = fragments
