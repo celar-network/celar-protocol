@@ -201,6 +201,7 @@ pub async fn run_local_reshare(
     out_dir: &Path,
     drop_role: Option<usize>,
     preproc: PreprocMode,
+    session_threshold: Option<usize>,
 ) -> Result<ReshareOutput> {
     // Only two modes exist for resharing: dummy (dev) and secure-large.
     // There has never been a PRSS/secure-small reshare mode, and there will
@@ -237,6 +238,7 @@ pub async fn run_local_reshare(
         parties,
         params: params_choice,
         preprocessing: preproc,
+        session_threshold,
         ..Default::default()
     };
     // validate() carries the n ≥ 4t+1 safety interlock for SecureLarge —
