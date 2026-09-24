@@ -16,7 +16,20 @@ publish = false
 [dependencies]
 celar_zama = { path = "../backend-adapter/zama" }
 sha3 = "0.10"
+# The repository's first secp256k1. Signing is production behaviour, not a
+# test concern, so this is a real dependency rather than a dev one.
+#
+# Pure Rust over bindings to the C library deliberately: this crate has no C
+# toolchain requirement and gains none here. The cost is that low-s
+# normalisation on this side and the verifier's low-s acceptance rule are two
+# implementations of one convention - which is exactly what the shared vector
+# exists to catch, so the bet is checked rather than taken.
+k256 = { version = "0.13", features = ["ecdsa"] }
 
 [dev-dependencies]
 tfhe = { version = "1.7.0", features = ["integer"] }
 hex = "0.4"
+# Test-only: the cross-language vector is one file read by both
+# implementations. Duplicating its inputs here instead would make the two
+# sides agree today and drift the moment either copy is edited.
+serde_json = "1"

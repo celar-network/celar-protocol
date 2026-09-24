@@ -9,5 +9,11 @@
     "ct_digest": "2222222222222222222222222222222222222222222222222222222222222222"
   },
   "preimage_keccak_go": "e5d2f395c854f775d296ce3bd24e7589e955451064d98d1b21e30cfef7886952",
-  "preimage_keccak_coprocessor": ""
+  "preimage_keccak_coprocessor": "e5d2f395c854f775d296ce3bd24e7589e955451064d98d1b21e30cfef7886952",
+  "_signing_comment": "A fixed test-only key so the signature is reproducible. The producing side signs; the consuming side verifies. That is the loop the two halves of the preimage cannot check on their own: agreement on what to hash says nothing about agreement on the signature's encoding, the recovery id, or the low-s rule.",
+  "signing": {
+    "secret_key": "4c0883a69102937d6231471b5dbb6204fe512961708279b4b9f2e5b0e4a4e2a1",
+    "coprocessor_id": "c10c5b4699c4fbed0ea0f1cd24aa34323cae53ba",
+    "signature": "2b78ea40bac6910e7e7e9ca4d4978572697fa51cbf601de996cf491f3e585f113bff10f57bbf561296455c9e3b19b5ee490c2c07e6f8967e60b1d845949a9f7301"
+  }
 }

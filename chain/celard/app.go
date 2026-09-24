@@ -27,6 +27,9 @@ import (
 	epochcommit "github.com/cosmos/evm/evmd/epochcommit"
 	epochcommitkeeper "github.com/cosmos/evm/evmd/epochcommit/keeper"
 	epochcommittypes "github.com/cosmos/evm/evmd/epochcommit/types"
+	fraudevidence "github.com/cosmos/evm/evmd/fraudevidence"
+	fraudevidencekeeper "github.com/cosmos/evm/evmd/fraudevidence/keeper"
+	fraudevidencetypes "github.com/cosmos/evm/evmd/fraudevidence/types"
 	precisebank "github.com/cosmos/evm/evmd/precisebank"
 	precisebankkeeper "github.com/cosmos/evm/evmd/precisebank/keeper"
 	precisebanktypes "github.com/cosmos/evm/evmd/precisebank/types"
@@ -174,6 +177,7 @@ type EVMD struct {
 	BankKeeper            bankkeeper.Keeper
 	PreciseBankKeeper     precisebankkeeper.Keeper
 	EpochCommitKeeper     epochcommitkeeper.Keeper
+	FraudEvidenceKeeper   fraudevidencekeeper.Keeper
 	StakingKeeper         *stakingkeeper.Keeper
 	SlashingKeeper        slashingkeeper.Keeper
 	MintKeeper            mintkeeper.Keeper
@@ -256,6 +260,7 @@ func NewExampleApp(
 		// per-epoch committee commitment archive; the store name is part of
 		// the proof path the KMS verifier checks
 		epochcommittypes.StoreKey,
+		fraudevidencetypes.StoreKey,
 	)
 	oKeys := storetypes.NewObjectStoreKeys(banktypes.ObjectStoreKey, evmtypes.ObjectKey)
 
@@ -329,6 +334,13 @@ func NewExampleApp(
 	// live one. NO RUNTIME WRITE PATH yet: entries are established at genesis
 	// and read off-chain through state proofs.
 	app.EpochCommitKeeper = epochcommitkeeper.NewKeeper(keys[epochcommittypes.StoreKey])
+
+	// fraudevidence keeps convictions and coprocessor attestations. The chain
+	// id is passed in because every attestation signature is bound to it:
+	// taking it from the node's own configuration means a wrong network
+	// rejects attestations loudly rather than accepting another chain's.
+	app.FraudEvidenceKeeper = fraudevidencekeeper.NewKeeper(
+		keys[fraudevidencetypes.StoreKey], evmChainID)
 
 	// precisebank wraps x/bank to give the EVM 18-dec precision (acelar) over a
 	// 9-dec integer bank denom (ncelar). It is handed to the EVM-side consumers
@@ -623,6 +635,7 @@ func NewExampleApp(
 		erc20.NewAppModule(app.Erc20Keeper, app.AccountKeeper),
 		precisebank.NewAppModule(app.PreciseBankKeeper, app.BankKeeper, app.AccountKeeper),
 		epochcommit.NewAppModule(app.EpochCommitKeeper),
+		fraudevidence.NewAppModule(app.FraudEvidenceKeeper),
 	)
 
 	// BasicModuleManager defines the module BasicManager which is in charge of setting up basic,

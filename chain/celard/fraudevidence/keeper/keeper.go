@@ -20,11 +20,23 @@ import (
 // later invites a second encoding path.
 type Keeper struct {
 	storeKey storetypes.StoreKey
+
+	// The chain id bound into every attestation signature.
+	//
+	// Supplied at wiring time rather than read from config here: it is the
+	// EVM chain id a coprocessor signs over, and taking it from the one place
+	// that already knows it keeps this module independent of the EVM keeper.
+	// A wrong value rejects every honest attestation, which is loud; a value
+	// defaulted to zero would verify nothing, which is not.
+	chainID uint64
 }
 
-func NewKeeper(storeKey storetypes.StoreKey) Keeper {
-	return Keeper{storeKey: storeKey}
+func NewKeeper(storeKey storetypes.StoreKey, chainID uint64) Keeper {
+	return Keeper{storeKey: storeKey, chainID: chainID}
 }
+
+// ChainID is the value attestation signatures are bound to.
+func (k Keeper) ChainID() uint64 { return k.chainID }
 
 // RecordVerdict stores a conviction, and reports whether it was already there.
 //
