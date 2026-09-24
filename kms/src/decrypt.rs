@@ -567,6 +567,7 @@ pub fn prepare_decoupled_decrypt_inputs(
     keys_dir: &Path,
     shares_dir: &Path,
     value: u64,
+    signing_keys_dir: Option<&Path>,
     out_dir: &Path,
 ) -> Result<DecoupledDecryptManifest> {
     let rt = crate::reshare::UpwardReshareTranscript::load(
@@ -627,10 +628,40 @@ pub fn prepare_decoupled_decrypt_inputs(
     fs::write(out_dir.join(DECOUPLED_CT_FILE), ct_bytes)?;
 
     // One degree-`degree` flooding mask per block; split each seat's shares out
-    // to its own file, indexed by one-based role.
-    let mask_batches: Vec<crate::mask_supply::SealedMaskBatch> = (0..n_blocks)
-        .map(|_| crate::mask_supply::build_honest_batch(parties, degree, degree + 1))
-        .collect::<Result<Vec<_>>>()?;
+    // to its own file, indexed by one-based role. When signing keys are given,
+    // each seat's contribution is seeded from H(VRF_sk(epoch‖block) ‖ local_rng)
+    // under its own operational key (SR9 item 5), so a fleet-wide local-RNG
+    // failure stays "predictable to the seat" rather than "to the coalition";
+    // without them, a shared local RNG (dev). Reuses the E69 ed25519 op key as
+    // the VRF (design: doc/engg/tasks/vrf-contribution-seeds/design.md).
+    let mask_batches: Vec<crate::mask_supply::SealedMaskBatch> = match signing_keys_dir {
+        Some(sk_dir) => {
+            use rand::RngCore;
+            let epoch = rt.created_unix;
+            let mut local = aes_prng::AesRng::from_random_seed();
+            (0..n_blocks)
+                .map(|block| -> Result<crate::mask_supply::SealedMaskBatch> {
+                    let mut seat_seeds: Vec<(usize, [u8; 32])> = Vec::with_capacity(degree + 1);
+                    for seat in 1..=(degree + 1) {
+                        let key_path = sk_dir.join(format!("signing_party{seat}.key"));
+                        let vrf_out =
+                            crate::node::vrf_contribution_output(&key_path, epoch, block as u64)?;
+                        let mut local_entropy = [0u8; 32];
+                        local.fill_bytes(&mut local_entropy);
+                        let seed = crate::mask_supply::vrf_mixed_contribution_seed(
+                            &vrf_out,
+                            &local_entropy,
+                        );
+                        seat_seeds.push((seat, seed));
+                    }
+                    crate::mask_supply::build_batch_from_seeds(parties, degree, &seat_seeds)
+                })
+                .collect::<Result<Vec<_>>>()?
+        }
+        None => (0..n_blocks)
+            .map(|_| crate::mask_supply::build_honest_batch(parties, degree, degree + 1))
+            .collect::<Result<Vec<_>>>()?,
+    };
     let mut mask_by_role: Vec<Vec<Share<ResiduePoly<Z128, EXTENSION_DEGREE>>>> =
         vec![Vec::with_capacity(n_blocks); parties];
     for mb in &mask_batches {
