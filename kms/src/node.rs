@@ -330,6 +330,63 @@ fn sign_endorsement(key_path: &Path, digest_hex: &str) -> Result<String> {
     Ok(hex::encode(sk.sign(digest_hex.as_bytes()).to_bytes()))
 }
 
+/// Domain-separated input for the per-seat contribution-seed VRF (SR9 item 5).
+pub const VRF_CONTRIBUTION_DOMAIN: &str = "celar.kms.vrf.contribution.v1";
+
+fn vrf_contribution_msg(epoch: u64, index: u64) -> Vec<u8> {
+    let mut msg = Vec::with_capacity(VRF_CONTRIBUTION_DOMAIN.len() + 16);
+    msg.extend_from_slice(VRF_CONTRIBUTION_DOMAIN.as_bytes());
+    msg.extend_from_slice(&epoch.to_be_bytes());
+    msg.extend_from_slice(&index.to_be_bytes());
+    msg
+}
+
+/// This seat's VRF output over `(epoch, index)` — a domain-separated
+/// deterministic ed25519 signature under the seat's operational key (the same
+/// key `sign_endorsement` uses; no new key or roster field). Fed to
+/// `mask_supply::vrf_mixed_contribution_seed`, so a fleet-wide local-RNG failure
+/// degrades to "predictable to the seat" rather than "to the coalition"
+/// (SR9 adopt-list item 5). Verifiable by the seat's rostered pubkey — see
+/// `verify_vrf_contribution`. v1 reuses ed25519-sign-as-VRF: adequate for the
+/// entropy purpose, not a strict RFC-9381 ECVRF
+/// (design: `doc/engg/tasks/vrf-contribution-seeds/design.md`).
+pub fn vrf_contribution_output(key_path: &Path, epoch: u64, index: u64) -> Result<Vec<u8>> {
+    use ed25519_dalek::{Signer, SigningKey};
+    let raw = fs::read_to_string(key_path)
+        .with_context(|| format!("reading operational signing key {}", key_path.display()))?;
+    let bytes = hex::decode(raw.trim()).context("operational signing key is not hex")?;
+    let arr: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("operational signing key is not 32 bytes"))?;
+    let sk = SigningKey::from_bytes(&arr);
+    Ok(sk.sign(&vrf_contribution_msg(epoch, index)).to_bytes().to_vec())
+}
+
+/// Verify a seat's VRF output against its rostered ed25519 pubkey (64-hex) —
+/// the "verifiable" half: an auditor confirms the seat used its registered key
+/// over `(epoch, index)`, so the contribution seed provably mixes that key.
+pub fn verify_vrf_contribution(
+    pubkey_hex: &str,
+    epoch: u64,
+    index: u64,
+    vrf_output: &[u8],
+) -> Result<()> {
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    let pk_bytes: [u8; 32] = hex::decode(pubkey_hex.trim())
+        .context("vrf pubkey is not hex")?
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("vrf pubkey is not 32 bytes"))?;
+    let vk = VerifyingKey::from_bytes(&pk_bytes).context("vrf pubkey is not a valid ed25519 point")?;
+    let sig_bytes: [u8; 64] = vrf_output
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("vrf output is not a 64-byte ed25519 signature"))?;
+    let sig = Signature::from_bytes(&sig_bytes);
+    vk.verify(&vrf_contribution_msg(epoch, index), &sig)
+        .map_err(|e| anyhow::anyhow!("vrf output failed verification: {e}"))
+}
+
 /// Verify that a set of transcript fragments carries a **reconstruction quorum**
 /// of valid seat endorsements over ONE transcript — the authorship check a
 /// bare hash chain cannot supply (structural checks constrain the bytes; this
