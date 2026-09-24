@@ -121,6 +121,12 @@ enum Cmd {
         /// budget).
         #[arg(long, default_value = "large")]
         session: String,
+        /// Session corruption threshold the ceremony sharded at — NOT recorded
+        /// in the transcript, so supply it for a committee keyed below the
+        /// ⌊(c−1)/3⌋ default (a c=50 secure ceremony ran t=12, not 16). Omit to
+        /// assume the default.
+        #[arg(long)]
+        session_threshold: Option<usize>,
         #[arg(long, default_value = "decrypt-report.json")]
         out: PathBuf,
     },
@@ -406,6 +412,7 @@ async fn main() -> Result<()> {
             shares_dir,
             value,
             session,
+            session_threshold,
             out,
         } => {
             let shares = shares_dir.clone().unwrap_or_else(|| keys_dir.clone());
@@ -420,6 +427,7 @@ async fn main() -> Result<()> {
                 &shares,
                 value,
                 session_kind,
+                session_threshold,
                 &out,
             )
             .await?;
