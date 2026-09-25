@@ -12,4 +12,5 @@ pub mod opstream;
 pub(crate) mod preimage;
 pub mod sign;
 pub mod rerand;
+pub mod service;
 pub mod source;
