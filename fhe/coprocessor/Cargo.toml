@@ -25,11 +25,13 @@ sha3 = "0.10"
 # implementations of one convention - which is exactly what the shared vector
 # exists to catch, so the bet is checked rather than taken.
 k256 = { version = "0.13", features = ["ecdsa"] }
+# Promoted from a dev dependency 2026-09-25, when the live stream source landed:
+# reading the chain's own logs means parsing an RPC response, and hand-rolled
+# extraction from JSON is the kind of thing that works on every response anyone
+# thought to try. No HTTP client here on purpose - the transport is a trait, so
+# this crate parses and does not dial.
+serde_json = "1"
 
 [dev-dependencies]
 tfhe = { version = "1.7.0", features = ["integer"] }
 hex = "0.4"
-# Test-only: the cross-language vector is one file read by both
-# implementations. Duplicating its inputs here instead would make the two
-# sides agree today and drift the moment either copy is edited.
-serde_json = "1"
