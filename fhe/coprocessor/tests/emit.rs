@@ -54,3 +54,21 @@ fn an_empty_batch_is_still_a_document() {
     // must be able to tell "nothing to do" from "the file is broken".
     assert_eq!(to_json(&[]), "{\"attestations\":[]}");
 }
+
+#[test]
+fn the_writer_produces_the_shared_vector() {
+    // The Go relayer parses this same file. Pinning both sides to one artifact
+    // is what makes a format change fail loudly here rather than as a rejected
+    // submission on chain with no indication which side moved.
+    //
+    // Trimmed, deliberately: the file carries a trailing newline because it is
+    // a text file in a repository, and the writer produces a document without
+    // one. Comparing untrimmed would fail over a byte neither side means, which
+    // is the same trap the endorsement digest documents — there the fix was to
+    // trim the encoder's newline, here it is to trim the file's.
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/handoff/vector.json");
+    let from_file = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("shared vector unreadable at {path}: {e}"));
+
+    assert_eq!(to_json(&[sample()]), from_file.trim_end());
+}
