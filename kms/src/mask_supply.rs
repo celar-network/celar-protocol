@@ -326,7 +326,8 @@ impl SealedMaskBatch {
     }
 }
 
-/// Domain separator for the VRF-mixed contribution seed (SR9 / adopt-list item 5).
+/// Domain separator for the VRF-mixed contribution seed (the adopted
+/// contribution-randomness control).
 pub const VRF_SEED_DOMAIN: &[u8] = b"celar.kms.mask.contribution-seed.v1";
 
 /// Derive a per-seat contribution seed that stays unpredictable to a COALITION

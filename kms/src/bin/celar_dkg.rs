@@ -166,7 +166,7 @@ enum Cmd {
         /// Dir with the seats' ed25519 operational signing keys
         /// (`signing_party{i}.key`, as `celar-certs` writes). When given, each
         /// seat's flooding-mask contribution is VRF-seeded under its own key
-        /// (SR9 item 5); omit for a dev shared-RNG batch.
+        /// (the adopted contribution-randomness control); omit for a dev shared-RNG batch.
         #[arg(long)]
         signing_keys_dir: Option<PathBuf>,
         /// Output dir for the per-seat inputs (distribute one copy to each seat).

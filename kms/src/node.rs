@@ -330,7 +330,8 @@ fn sign_endorsement(key_path: &Path, digest_hex: &str) -> Result<String> {
     Ok(hex::encode(sk.sign(digest_hex.as_bytes()).to_bytes()))
 }
 
-/// Domain-separated input for the per-seat contribution-seed VRF (SR9 item 5).
+/// Domain-separated input for the per-seat contribution-seed VRF, adopted as a
+/// non-optional control by the security review of contribution randomness.
 pub const VRF_CONTRIBUTION_DOMAIN: &str = "celar.kms.vrf.contribution.v1";
 
 fn vrf_contribution_msg(epoch: u64, index: u64) -> Vec<u8> {
@@ -346,7 +347,7 @@ fn vrf_contribution_msg(epoch: u64, index: u64) -> Vec<u8> {
 /// key `sign_endorsement` uses; no new key or roster field). Fed to
 /// `mask_supply::vrf_mixed_contribution_seed`, so a fleet-wide local-RNG failure
 /// degrades to "predictable to the seat" rather than "to the coalition"
-/// (SR9 adopt-list item 5). Verifiable by the seat's rostered pubkey — see
+/// (the adopted contribution-randomness control). Verifiable by the seat's rostered pubkey — see
 /// `verify_vrf_contribution`. v1 reuses ed25519-sign-as-VRF: adequate for the
 /// entropy purpose, not a strict RFC-9381 ECVRF
 /// (design: `doc/engg/tasks/vrf-contribution-seeds/design.md`).
