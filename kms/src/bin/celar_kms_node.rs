@@ -17,7 +17,8 @@ use clap::{Parser, Subcommand};
 
 use celar_kms::config::CommitteeConfig;
 use celar_kms::node::{
-    run_ceremony, run_distributed_decrypt, run_distributed_reshare, NodeConfig, PeerEntry,
+    run_ceremony, run_distributed_decrypt, run_distributed_mask_contribution,
+    run_distributed_reshare, NodeConfig, PeerEntry,
     TlsPaths, TranscriptFragment, FRAGMENT_SCHEMA,
 };
 use celar_kms::transcript::{PartyRecord, Transcript};
@@ -116,6 +117,26 @@ enum Cmd {
         /// share files, pk, decrypt-inputs.json).
         #[arg(long)]
         inputs: PathBuf,
+    },
+    /// Run this node's side of DISTRIBUTED flooding-mask sampling over mTLS — the
+    /// production shape of the degree-`d` mask supply. This seat samples its
+    /// bounded flooding terms from its OWN VRF-mixed seed (its operational key,
+    /// from the node config, never leaves the box) and deals them at degree `d`
+    /// over the mesh; every seat sums the received shares into its mask column and
+    /// writes it into `--inputs` (`mask_NNN.bin`), replacing any dev-generated
+    /// column, ready for `decrypt-decoupled`. Blocks serving until stopped, like
+    /// `run`. `--epoch` must match across seats (use the reshare's created-unix).
+    MaskContribute {
+        #[arg(long)]
+        config: PathBuf,
+        /// Dir with this seat's decrypt inputs (decrypt-inputs.json gives the
+        /// committee shape and block count); the mask column is written here.
+        #[arg(long)]
+        inputs: PathBuf,
+        /// Epoch fed to the contribution VRF over (epoch ‖ block); must be the
+        /// SAME on every seat so the dealing is one consistent batch.
+        #[arg(long)]
+        epoch: u64,
     },
     /// Run this node's side of a DISTRIBUTED upward reshare over mTLS — an
     /// in-place degree raise on the committee (§7.5). Reads this seat's old
@@ -440,6 +461,18 @@ async fn main() -> Result<()> {
             // DECRYPT-OK, then keeps serving until the process is stopped (peers
             // may still need this seat's robust-open messages).
             run_distributed_decrypt(&cfg, &inputs).await?;
+            Ok(())
+        }
+        Cmd::MaskContribute {
+            config,
+            inputs,
+            epoch,
+        } => {
+            let cfg = NodeConfig::load(&config)?;
+            // run_distributed_mask_contribution writes this seat's mask column into
+            // `inputs` and mask_result_NNN.json, prints MASK-OK, then keeps serving
+            // until stopped (peers may still need this seat's dealt shares).
+            run_distributed_mask_contribution(&cfg, &inputs, epoch).await?;
             Ok(())
         }
         Cmd::ReshareUp {

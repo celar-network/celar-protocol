@@ -44,7 +44,7 @@ use threshold_execution::online::preprocessing::memory::InMemoryBasePreprocessin
 use threshold_execution::online::preprocessing::{create_memory_factory, DKGPreprocessing};
 use threshold_execution::runtime::sessions::large_session::LargeSession;
 use threshold_execution::runtime::sessions::base_session::{
-    BaseSession, GenericBaseSessionHandles, ToBaseSession,
+    BaseSession, BaseSessionHandles, GenericBaseSessionHandles, ToBaseSession,
 };
 use threshold_execution::runtime::sessions::small_session::SmallSession;
 use threshold_execution::runtime::sessions::session_parameters::SessionParameters;
@@ -1239,6 +1239,220 @@ pub async fn run_distributed_decrypt(
     Ok(fragment)
 }
 
+// ---------------------------------------------------------------- distributed mask supply
+
+/// One seat's distributed mask-contribution result — the digest of this seat's
+/// per-block flooding-mask shares and the count of contributors summed, so the
+/// operator can confirm every seat wrote a mask column over one consistent
+/// dealing (the analogue of pk_G equality for the decrypt).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MaskResultFragment {
+    pub schema: String,
+    pub role: usize,
+    pub parties: usize,
+    pub degree: usize,
+    pub contributors: usize,
+    pub n_blocks: usize,
+    pub mask_shares_sha256: String,
+    pub wall_secs: f64,
+}
+
+pub const MASK_RESULT_SCHEMA: &str = "celar-mask-result/v1";
+
+pub fn mask_result_file(role: usize) -> String {
+    format!("mask_result_{role:03}.json")
+}
+
+/// Deal-and-sum the flooding-mask contributions over a session: each of the
+/// first `contributors` seats inputs its per-block terms (`my_terms` when this
+/// seat is a contributor, else `None`) via `robust_input`, which shares the term
+/// at the session threshold — set to the mask degree `d` by the caller — and
+/// routes each share to its owner; every seat then SUMS the shares it receives
+/// across all `contributors` dealers into its per-block mask share. No party
+/// sees another seat's term. One `robust_input` per dealer carries ALL blocks at
+/// once (the call bundles per-recipient sends), so this is `contributors` rounds,
+/// not `contributors × n_blocks`.
+///
+/// Factored out of [`run_distributed_mask_contribution`] so the in-process sim
+/// harness drives the exact dealing without the mTLS transport. Generic over any
+/// `BaseSessionHandles`, so the driver passes its `BaseSession` and the test
+/// passes a `SmallSession`.
+pub async fn deal_and_sum_masks<S: BaseSessionHandles>(
+    session: &mut S,
+    my_role: Role,
+    my_terms: Option<Vec<Poly>>,
+    contributors: usize,
+    n_blocks: usize,
+) -> Result<Vec<algebra::sharing::share::Share<Poly>>> {
+    use algebra::sharing::share::Share;
+    use threshold_execution::sharing::input::robust_input;
+
+    let mut mask_shares: Vec<Share<Poly>> = Vec::new();
+    for dealer in 1..=contributors {
+        let value = if my_role.one_based() == dealer {
+            my_terms.clone()
+        } else {
+            None
+        };
+        let shares = robust_input(session, &value, &my_role, dealer)
+            .await
+            .map_err(|e| anyhow::anyhow!("robust_input for dealer {dealer} failed: {e:?}"))?;
+        if shares.len() != n_blocks {
+            bail!(
+                "dealer {dealer} dealt {} blocks, expected {n_blocks}",
+                shares.len()
+            );
+        }
+        if mask_shares.is_empty() {
+            mask_shares = shares;
+        } else {
+            for (acc, s) in mask_shares.iter_mut().zip(shares.into_iter()) {
+                *acc = Share::new(my_role, acc.value() + s.value());
+            }
+        }
+    }
+    if mask_shares.len() != n_blocks {
+        bail!("no contributions were summed (contributors={contributors})");
+    }
+    Ok(mask_shares)
+}
+
+/// Run this seat's side of DISTRIBUTED flooding-mask sampling over mTLS — the
+/// production shape of the degree-`d` mask supply. Each of the first `degree+1`
+/// seats (the distinct-contribution quorum) samples a bounded flooding term per
+/// ciphertext block from its OWN VRF-mixed seed — `H(VRF_sk(epoch‖block) ‖
+/// local_rng)` under its operational key, which never leaves the box — and DEALS
+/// it at degree `d` over the mesh; every seat sums the shares it receives into
+/// its per-block mask share. No party ever sees another seat's term or key,
+/// which the single-process `decrypt-prepare` (it reads every seat's key in one
+/// process) only stands in for as a dev/measurement convenience.
+///
+/// The mask is born at degree `d` (the session runs at threshold `d`) so a
+/// low-degree coalition cannot reconstruct it in advance and strip it — the
+/// property the whole contribution-sum construction defends.
+///
+/// Honest-dealer path: `robust_input` carries no dealer verifiability, so an
+/// out-of-range or inconsistent term is not caught here. The partial-decryption
+/// proof relation and the cut-and-choose audit — both deferred — are that job,
+/// exactly as the `mask_supply` module header scopes it. Writes this seat's mask
+/// column to `inputs_dir` (`decoupled_mask_file(role)`), replacing any
+/// dev-generated column, so a following `run-distributed-decrypt` consumes the
+/// distributed mask.
+pub async fn run_distributed_mask_contribution(
+    cfg: &NodeConfig,
+    inputs_dir: &Path,
+    epoch: u64,
+) -> Result<MaskResultFragment> {
+    use rand::RngCore;
+
+    cfg.validate()?;
+    // This seat's operational key seeds the VRF — the same key `run` configures
+    // and `sign_endorsement` uses; it never leaves this box.
+    let signing_key_path = cfg.signing_key.as_ref().context(
+        "node config has no signing_key; the operational key is required to seed \
+         the VRF-mixed contribution (set it as the `run` command does)",
+    )?;
+    let manifest: crate::decrypt::DecoupledDecryptManifest = serde_json::from_str(
+        &fs::read_to_string(inputs_dir.join(crate::decrypt::DECOUPLED_MANIFEST_FILE))
+            .context("reading decrypt-inputs.json")?,
+    )?;
+    if manifest.parties != cfg.committee.parties {
+        bail!(
+            "inputs are for a {}-seat committee but this node's committee is {}",
+            manifest.parties,
+            cfg.committee.parties
+        );
+    }
+    let n = manifest.parties;
+    let degree = manifest.degree;
+    let n_blocks = manifest.n_blocks;
+    let contributors = degree + 1; // the distinct-contribution quorum (one honest term)
+    if n < contributors {
+        bail!(
+            "committee of {n} cannot carry a degree-{degree} mask (need >= degree+1 = {contributors})"
+        );
+    }
+
+    // This seat's per-block terms, if it is one of the degree+1 contributors —
+    // sampled from H(VRF_sk(epoch‖block) ‖ local_rng) under this seat's own key,
+    // so a fleet-wide local-RNG failure stays "predictable to the seat" rather
+    // than "to the coalition". Non-contributors input nothing but still receive
+    // and sum shares.
+    let my_terms: Option<Vec<Poly>> = if cfg.role <= contributors {
+        let mut local = AesRng::from_random_seed();
+        let mut terms = Vec::with_capacity(n_blocks);
+        for block in 0..n_blocks {
+            let vrf_out = vrf_contribution_output(signing_key_path, epoch, block as u64)?;
+            let mut local_entropy = [0u8; 32];
+            local.fill_bytes(&mut local_entropy);
+            let seed =
+                crate::mask_supply::vrf_mixed_contribution_seed(&vrf_out, &local_entropy);
+            terms.push(crate::mask_supply::contribution_term_from_seed(&seed));
+        }
+        Some(terms)
+    } else {
+        None
+    };
+
+    // Networked SYNC session at the MASK degree. robust_input shares at
+    // session.threshold(), so the threshold IS the sharing degree here; the only
+    // constraint the session enforces is degree < n, already checked above.
+    let sid = SessionId::from(cfg.session_id as u128);
+    let (_manager, server_handle, mut base) =
+        bring_up_session(cfg, sid, degree as u8, NetworkMode::Sync).await?;
+    base.network()
+        .set_timeout_for_next_round(Duration::from_secs(cfg.round_timeout_secs))
+        .await;
+
+    let my_role = Role::indexed_from_one(cfg.role);
+    eprintln!(
+        "celar-kms-node[{}]: distributed mask sampling (degree {degree}, {contributors} contributors, {n_blocks} blocks, sync)…",
+        cfg.role
+    );
+    let started = Instant::now();
+    let mask_shares =
+        deal_and_sum_masks(&mut base, my_role, my_terms, contributors, n_blocks).await?;
+    let wall_secs = started.elapsed().as_secs_f64();
+
+    // Write this seat's mask column — the exact file run_distributed_decrypt reads.
+    let mask_bytes =
+        bincode::serialize(&mask_shares).context("serializing this seat's mask shares")?;
+    fs::write(
+        inputs_dir.join(crate::decrypt::decoupled_mask_file(cfg.role)),
+        &mask_bytes,
+    )?;
+    let digest = sha256_hex(&mask_bytes);
+
+    let fragment = MaskResultFragment {
+        schema: MASK_RESULT_SCHEMA.to_string(),
+        role: cfg.role,
+        parties: n,
+        degree,
+        contributors,
+        n_blocks,
+        mask_shares_sha256: digest,
+        wall_secs,
+    };
+    fs::create_dir_all(&cfg.out_dir)?;
+    fs::write(
+        cfg.out_dir.join(mask_result_file(cfg.role)),
+        serde_json::to_string_pretty(&fragment)?,
+    )?;
+    println!(
+        "MASK-OK role={} degree={degree} contributors={contributors} blocks={n_blocks} wall={:.2}s result {}",
+        cfg.role,
+        wall_secs,
+        cfg.out_dir.join(mask_result_file(cfg.role)).display(),
+    );
+    eprintln!(
+        "celar-kms-node[{}]: mask column written; STAYING UP to serve peers — \
+         stop this process only after all seats have finished.",
+        cfg.role
+    );
+    let _ = server_handle.await;
+    Ok(fragment)
+}
+
 // ---------------------------------------------------------------- distributed reshare
 
 /// One seat's distributed upward-reshare result — the new degree-`d` share's
@@ -1598,5 +1812,95 @@ mod endorsement_tests {
         let mut c = base_fragment(1);
         c.pk_g_sha256 = "dd".repeat(32);
         assert_ne!(a.endorsement_digest(), c.endorsement_digest());
+    }
+}
+
+#[cfg(test)]
+mod mask_dealing_tests {
+    use super::*;
+    use algebra::sharing::shamir::{RevealOp, ShamirSharings};
+    use algebra::sharing::share::Share;
+    use algebra::structure_traits::FromU128;
+    use std::sync::Arc;
+    use threshold_execution::runtime::sessions::session_parameters::GenericParameterHandles;
+    use threshold_execution::runtime::sessions::small_session::SmallSession;
+    use threshold_execution::tests::helper::tests_and_benches::execute_protocol_small;
+    use threshold_types::network::NetworkMode;
+
+    /// The distributed dealing, driven in-process over the sim network: the mask
+    /// share each seat holds must reconstruct — at the MASK DEGREE — to the SUM of
+    /// the dealers' terms, with no seat ever holding another seat's term. This is
+    /// the honest core of `run_distributed_mask_contribution` without the mTLS
+    /// transport, so it runs in CI without the fleet.
+    #[tokio::test]
+    async fn distributed_mask_reconstructs_to_the_sum_of_terms() {
+        const N: usize = 7;
+        const D: usize = 3; // mask degree == session threshold here
+        const CONTRIB: usize = D + 1; // distinct-contribution quorum (one honest term)
+        const N_BLOCKS: usize = 4;
+
+        // Known terms per dealer per block, so the sum is predictable. Only the
+        // first CONTRIB seats are dealers; the rest input nothing but still sum.
+        let terms: Vec<Vec<Poly>> = (1..=CONTRIB)
+            .map(|d| {
+                (0..N_BLOCKS)
+                    .map(|b| Poly::from_u128((d * 1000 + b + 1) as u128))
+                    .collect()
+            })
+            .collect();
+        let expected: Vec<Poly> = (0..N_BLOCKS)
+            .map(|b| {
+                let mut acc = Poly::from_u128(0);
+                for d in 0..CONTRIB {
+                    acc = acc + terms[d][b].clone();
+                }
+                acc
+            })
+            .collect();
+        let terms = Arc::new(terms);
+
+        let mut task = move |mut session: SmallSession<Poly>, _info: Option<String>| {
+            let terms = Arc::clone(&terms);
+            async move {
+                let role = session.my_role();
+                let my_terms: Option<Vec<Poly>> = if role.one_based() <= CONTRIB {
+                    Some(terms[role.one_based() - 1].clone())
+                } else {
+                    None
+                };
+                let shares = deal_and_sum_masks(&mut session, role, my_terms, CONTRIB, N_BLOCKS)
+                    .await
+                    .unwrap();
+                (role, shares)
+            }
+        };
+        let results = execute_protocol_small::<_, _, Poly, EXTENSION_DEGREE>(
+            N,
+            D as u8,
+            None,
+            NetworkMode::Sync,
+            None,
+            &mut task,
+            None,
+        )
+        .await;
+
+        // Every seat produced exactly one mask share per block.
+        for (_, shares) in &results {
+            assert_eq!(shares.len(), N_BLOCKS);
+        }
+        // Each block's N shares reconstruct at degree D to the sum of the terms —
+        // the strip-defence property: the mask lives at the key's degree and is
+        // the sum of the (never-opened) contributions.
+        for b in 0..N_BLOCKS {
+            let block_shares: Vec<Share<Poly>> =
+                results.iter().map(|(_, ms)| ms[b].clone()).collect();
+            let recon = ShamirSharings {
+                shares: block_shares,
+            }
+            .reconstruct(D)
+            .unwrap();
+            assert_eq!(recon, expected[b], "block {b} mask must be the sum of terms");
+        }
     }
 }
