@@ -421,7 +421,7 @@ async fn main() -> Result<()> {
                 // Record the REAL threshold the ceremony sharded at (from the
                 // fragments) so the transcript is self-describing; `None` on
                 // legacy fragments falls back to the ⌊(c−1)/3⌋ default, as
-                // before (E77).
+                // before this field existed.
                 session_threshold: first.session_threshold,
                 ..Default::default()
             };

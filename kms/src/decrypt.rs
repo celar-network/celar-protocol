@@ -144,9 +144,10 @@ pub async fn run_local_threshold_decrypt(
 ) -> Result<DecryptOutput> {
     // Committee shape from the genesis transcript beside the pk. The session
     // threshold the ceremony sharded at is now recorded in the transcript by
-    // `collect` (from the fragments, E77), so prefer the explicit flag, else the
+    // `collect` (from the fragments), so prefer the explicit flag, else the
     // transcript's recorded t — a ceremony that recorded it needs no flag. Legacy
-    // transcripts (pre-E77, no recorded t) carry the ⌊(c−1)/3⌋ default here, so
+    // transcripts written before that change carry no recorded t and take the
+    // ⌊(c−1)/3⌋ default here, so
     // the flag remains their fallback for a committee keyed below n/3.
     let transcript = Transcript::load(&keys_dir.join("transcript.json"))?;
     let parties = transcript.committee.parties;
