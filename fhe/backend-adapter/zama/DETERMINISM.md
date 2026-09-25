@@ -69,6 +69,32 @@ admission tests round-trip through it.
 basis is strictly smaller than the wire form, so the exclusion is checked rather
 than assumed.*
 
+### Where `digest_basis` was introduced, because the history does not say
+
+**`digest_basis` was added to `backend.rs` in commit `a7c8fe8`, under a message
+describing documentation work it does not contain.** So `git log -- fhe/backend-adapter/`
+and `git bisect` will **not** surface this function to someone looking for when
+the attested-digest basis was introduced. This note is where that search ends
+instead.
+
+**How it happened:** two repositories were committed in one sitting and the
+messages crossed — a documentation message landed on a code commit. The
+corresponding documentation work is properly committed in the documentation
+repository, so nothing was lost; the code commit simply carries the wrong
+description. It also reached `main` directly, with no pull request, which is why
+the function's tests and documentation were reviewed while the implementation
+was not.
+
+**Why the message was not rewritten.** Correcting it means a force-push that
+changes every subsequent hash, and this project's working records cite those
+hashes as evidence — so the rewrite must be paired with an old-to-new remap
+applied across those records in the same sitting, coordinated across two
+engineers. That was judged to cost more than it returns, and the practical loss
+was only ever *discoverability*, which this note restores.
+
+*A false message with a correction beside it is a more honest record than a
+rewritten history that reads as though it never happened.*
+
 
 TFHE-rs 1.7.0, release profile, CPU **without** AVX-512 (Intel Ultra 7 258V).
 

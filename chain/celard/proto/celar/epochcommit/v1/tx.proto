@@ -1,0 +1,104 @@
+syntax = "proto3";
+package celar.epochcommit.v1;
+
+import "gogoproto/gogo.proto";
+import "cosmos/msg/v1/msg.proto";
+import "cosmos_proto/cosmos.proto";
+import "celar/epochcommit/v1/archive.proto";
+
+option go_package = "github.com/cosmos/evm/evmd/epochcommit/types";
+
+// Msg is the runtime write path for the commitment archive.
+//
+// Until this existed the archive was genesis-only, deliberately: entries
+// originate in an off-chain ceremony, and a permissive interim authority would
+// have made the wiring look finished while the trust story was absent. An
+// absent write path is visibly incomplete; a permissive one is not.
+//
+// What makes the path safe is not who sends the transaction. The five artifact
+// checks constrain structure and continuity, and a hash chain establishes
+// ORDER, not AUTHORSHIP - every input to those checks is public, so a
+// submission carrying arbitrary commitments satisfies all five. The
+// authorship comes from a reconstruction quorum of rostered seats signing the
+// transcript's endorsement digest.
+service Msg {
+  option (cosmos.msg.v1.service) = true;
+
+  // SubmitEpochCommitments archives one epoch's per-seat commitments.
+  rpc SubmitEpochCommitments(MsgSubmitEpochCommitments) returns (MsgSubmitEpochCommitmentsResponse);
+}
+
+// SeatEndorsement is one seat's signature over the epoch's endorsement digest.
+//
+// The role travels with the signature because ed25519 offers no key recovery:
+// the chain must be told which rostered key to check against. That makes the
+// role attacker-supplied, and nothing trusts it beyond the lookup - a wrong
+// role fails verification rather than implicating the seat it names.
+message SeatEndorsement {
+  // One-based, matching the roster. Zero is not a seat.
+  uint32 role = 1;
+
+  // 64-byte ed25519 signature over the endorsement digest's HEX STRING bytes,
+  // not over the 32 decoded bytes. Signing the decoded form produces a
+  // signature that is valid in isolation and rejected here for every honest
+  // submission, which is why the distinction is stated on the wire rather than
+  // left to a comment on one side.
+  bytes signature = 2;
+}
+
+// MsgSubmitEpochCommitments carries one epoch's archive entries and the
+// endorsements that authenticate them.
+message MsgSubmitEpochCommitments {
+  option (cosmos.msg.v1.signer) = "submitter";
+
+  // Fee payer and relayer. Carries no authority over the contents: anyone may
+  // carry a quorum-endorsed transcript to the chain, and a committee that
+  // cannot reach the chain itself must not thereby be unable to archive its
+  // ceremony.
+  string submitter = 1 [(cosmos_proto.scalar) = "cosmos.AddressString"];
+
+  // The epoch being archived. Must be the stored latest plus one: the archive
+  // is a chain, and a gap would make absence undecidable for every epoch after
+  // it.
+  uint64 epoch = 2;
+
+  // One entry per seat, in role order. Roles are carried in the entries' own
+  // key derivation rather than repeated here.
+  repeated ArchivedSeatCommitment entries = 3 [(gogoproto.nullable) = false];
+
+  // The seat roles the entries belong to, positionally paired with `entries`.
+  //
+  // Carried explicitly rather than inferred from position in the list, because
+  // inferring it would silently renumber every seat if a submission omitted
+  // one - and a renumbered seat is the worst failure available on an
+  // accountability path: it convicts the wrong party.
+  repeated uint32 seat_roles = 4;
+
+  // The roster's canonical serialization, exactly as the ceremony produced it.
+  //
+  // The chain hashes THESE bytes against the roster digest it already anchors
+  // and parses them only afterwards, for the signing keys. Carrying the bytes
+  // rather than re-deriving them is what keeps a JSON canonicaliser that must
+  // agree with the producer forever out of this tree.
+  bytes roster_canonical_bytes = 5;
+
+  // Digest of the ceremony transcript that established this epoch, and the one
+  // it chains from. The second is checked against the value stored for
+  // epoch - 1.
+  string transcript_digest = 6;
+  string prev_transcript_digest = 7;
+
+  // A reconstruction quorum of distinct rostered seats, signing
+  // `transcript_digest`.
+  repeated SeatEndorsement endorsements = 8 [(gogoproto.nullable) = false];
+}
+
+message MsgSubmitEpochCommitmentsResponse {
+  // Whether this epoch was already archived with identical contents.
+  //
+  // Reported rather than silent, for the reason the attestation path reports
+  // it: at-least-once delivery and permissionless relaying make duplicates
+  // ordinary, and a relayer that cannot tell "stored" from "already stored"
+  // either retries forever or reads success as failure.
+  bool already_recorded = 1;
+}

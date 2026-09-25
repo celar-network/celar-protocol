@@ -326,12 +326,14 @@ impl SealedMaskBatch {
     }
 }
 
-/// Domain separator for the VRF-mixed contribution seed (SR9 / adopt-list item 5).
+/// Domain separator for the VRF-mixed contribution seed (the adopted
+/// contribution-randomness control).
 pub const VRF_SEED_DOMAIN: &[u8] = b"celar.kms.mask.contribution-seed.v1";
 
 /// Derive a per-seat contribution seed that stays unpredictable to a COALITION
 /// even if the fleet's local RNG fails (the Debian-OpenSSL / low-entropy class
-/// that variance/χ² and the E55 range check are structurally blind to). The seat
+/// that variance/χ² and the two-sided flooding range check are structurally
+/// blind to). The seat
 /// mixes the output of a VRF under its OWN key over `epoch ‖ index` with its
 /// local entropy:
 ///

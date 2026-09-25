@@ -631,10 +631,11 @@ pub fn prepare_decoupled_decrypt_inputs(
     // One degree-`degree` flooding mask per block; split each seat's shares out
     // to its own file, indexed by one-based role. When signing keys are given,
     // each seat's contribution is seeded from H(VRF_sk(epoch‖block) ‖ local_rng)
-    // under its own operational key (SR9 item 5), so a fleet-wide local-RNG
+    // under its own operational key (adopted as a non-optional control by the
+    // security review of contribution randomness), so a fleet-wide local-RNG
     // failure stays "predictable to the seat" rather than "to the coalition";
-    // without them, a shared local RNG (dev). Reuses the E69 ed25519 op key as
-    // the VRF (design: doc/engg/tasks/vrf-contribution-seeds/design.md).
+    // without them, a shared local RNG (dev). Reuses the roster-registered
+    // ed25519 operational signing key as the VRF key.
     let mask_batches: Vec<crate::mask_supply::SealedMaskBatch> = match signing_keys_dir {
         Some(sk_dir) => {
             use rand::RngCore;

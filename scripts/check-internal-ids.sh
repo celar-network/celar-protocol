@@ -31,7 +31,17 @@ fail=0
 # correction of this kind, and like the others it narrows the pattern
 # rather than excluding a file - a check that reports correct files as
 # leaks is a check people learn to skip.
-IDS='(^|[^-[:alnum:]])([ABCDEIQ][0-9]{1,2}|G([7-9]|[1-9][0-9])|D[0-9](\.[0-9]+)?|[EWRT][0-9]{1,2}|SEC[0-9]|LIC[0-9])\b'
+# SR added 2026-09-25: the security lane's prefix matched NOTHING here. It is
+# not in the single-letter class, and SEC[0-9] does not cover it, so four
+# `SR9` references sat in source and the check reported the tree clean. Found
+# by eye while rewording a different id in the same comment — which is exactly
+# the discovery route this script exists to replace.
+#
+# Fifth narrowing-or-widening of this pattern, and the fourth time the cause
+# was the same: the alphabet was narrower than the target. The header already
+# says a sweep "missed five sites its own grep alphabet could not match"; the
+# guard written from that lesson then reproduced it.
+IDS='(^|[^-[:alnum:]])([ABCDEIQ][0-9]{1,2}|G([7-9]|[1-9][0-9])|D[0-9](\.[0-9]+)?|[EWRT][0-9]{1,2}|SR[0-9]{1,2}|SEC[0-9]|LIC[0-9])\b'
 LANES='(Track [ABCD]\b|ENGG-[12]|engineer #[12]|work order|celar-progress-tracker)'
 
 # Text mode: the same two patterns, applied to a message instead of a tree.
