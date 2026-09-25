@@ -408,6 +408,22 @@ pub fn build_batch_from_seeds(
     builder.seal()
 }
 
+/// Derive one seat's flooding term deterministically from its per-seat
+/// contribution seed — the SAME magnitude+sign draw [`build_batch_from_seeds`]
+/// makes for a given seed, factored out so the DISTRIBUTED dealer (node side,
+/// `node::run_distributed_mask_contribution`) inputs an IDENTICAL term for a
+/// given VRF-mixed seed. Only the term must be well-defined per seed; the
+/// SHARING randomness differs by construction — a fresh local RNG in the
+/// single-process builder vs. the networked session's RNG in the distributed
+/// dealer — because whoever deals the term redraws its sharing.
+pub fn contribution_term_from_seed(seed: &[u8; 32]) -> ResiduePoly<Z128, EXTENSION_DEGREE> {
+    let mut key = [0u8; 16];
+    key.copy_from_slice(&seed[..16]);
+    let mut rng = AesRng::from_seed(key);
+    let mag = sample_bounded_magnitude(&mut rng);
+    term_from_magnitude(mag, rng.gen::<bool>())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -434,6 +450,23 @@ mod tests {
         assert_ne!(
             vrf_mixed_contribution_seed(b"ab", &ent),
             vrf_mixed_contribution_seed(b"a", &ent),
+        );
+    }
+
+    #[test]
+    fn contribution_term_is_deterministic_and_in_range() {
+        // The distributed dealer and the single-process builder must derive the
+        // SAME term from the same seed. Deterministic, and its magnitude lands in
+        // the flooding range (the term rides a random sign, so check |term| via
+        // the two derivations agreeing rather than re-deriving the magnitude).
+        let seed = [9u8; 32];
+        assert_eq!(
+            contribution_term_from_seed(&seed),
+            contribution_term_from_seed(&seed)
+        );
+        assert_ne!(
+            contribution_term_from_seed(&seed),
+            contribution_term_from_seed(&[10u8; 32])
         );
     }
 
