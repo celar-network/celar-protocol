@@ -32,6 +32,28 @@ k256 = { version = "0.13", features = ["ecdsa"] }
 # this crate parses and does not dial.
 serde_json = "1"
 
+# HTTP for the runnable binary only, behind a feature, so the library keeps the
+# property that made its test loop milliseconds: no network, no TLS stack, no
+# runtime. default-features off leaves plain HTTP - the devnet is local and a
+# TLS implementation we do not use is advisory surface we would carry for
+# nothing.
+ureq = { version = "2", optional = true, default-features = false }
+# The binary arms the backend's server key, which is thread-local state
+# inside the library. Optional for the same reason ureq is: the library and
+# its tests do not need it at build time, and the default build should stay
+# the small one.
+tfhe = { version = "1.7.0", features = ["integer"], optional = true }
+
+[features]
+# The binary. Off by default: `cargo test` builds neither the transport nor its
+# dependencies.
+cli = ["dep:ureq", "dep:tfhe"]
+
+[[bin]]
+name = "celar-copro"
+path = "src/bin/celar_copro.rs"
+required-features = ["cli"]
+
 [dev-dependencies]
 tfhe = { version = "1.7.0", features = ["integer"] }
 hex = "0.4"
