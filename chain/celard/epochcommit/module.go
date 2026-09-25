@@ -94,8 +94,16 @@ func NewAppModule(k keeper.Keeper) AppModule {
 
 func (am AppModule) Name() string { return am.AppModuleBasic.Name() }
 
-// RegisterServices registers nothing: no messages, no queries.
-func (am AppModule) RegisterServices(module.Configurator) {}
+// RegisterServices wires the write path.
+//
+// This registered nothing until 2026-09-24, and the comment it carried —
+// "no messages, no queries" — was accurate and was the defect: the archive was
+// complete, correct and unreachable, written only at genesis while the values
+// it holds originate in an off-chain ceremony. A handler that is not registered
+// is the same state as a store with no handler.
+func (am AppModule) RegisterServices(cfg module.Configurator) {
+	types.RegisterMsgServer(cfg.MsgServer(), keeper.NewMsgServerImpl(am.keeper))
+}
 
 func (am AppModule) InitGenesis(
 	ctx sdk.Context, cdc codec.JSONCodec, gs json.RawMessage,
