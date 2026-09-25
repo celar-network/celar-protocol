@@ -128,7 +128,24 @@ func NewRootCmd() *cobra.Command {
 			customAppTemplate, customAppConfig := config.InitAppConfig(types.DefaultEVMExtendedDenom, types.DefaultEVMChainID) // TODO:VLAD - Remove this
 			customTMConfig := initCometConfig()
 
-			return sdkserver.InterceptConfigsPreRunHandler(cmd, customAppTemplate, customAppConfig, customTMConfig)
+			if err := sdkserver.InterceptConfigsPreRunHandler(
+				cmd, customAppTemplate, customAppConfig, customTMConfig,
+			); err != nil {
+				return err
+			}
+
+			// Read the EFFECTIVE config, not the template above: the template
+			// only seeds a freshly generated file and says nothing about what
+			// a running node was handed.
+			if cmd.Name() == "start" {
+				serverCtx := sdkserver.GetServerContextFromCmd(cmd)
+				if serverCtx != nil {
+					if err := refuseExperimentalP2PTransport(serverCtx.Config); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
 		},
 	}
 
@@ -143,6 +160,53 @@ func NewRootCmd() *cobra.Command {
 	}
 
 	return rootCmd
+}
+
+// refuseExperimentalP2PTransport stops the node starting with the consensus
+// engine's experimental go-libp2p transport enabled.
+//
+// # Why a refusal rather than a default
+//
+// That transport brings QUIC, WebTransport, WebRTC and STUN NAT traversal into
+// the binary, and it carries the whole of this repository's remaining
+// dependency-advisory surface — seven of them at the time of writing. None of
+// it is used by this chain.
+//
+// Until now it was held off by a line in the devnet generator, which is
+// unreachable-by-CONFIGURATION: true for node homes that generator produced,
+// and for no others. A validator who wrote their own config inherits upstream's
+// default, and one flag makes seven advisories live at once with no code change
+// for anyone to review. A refusal here makes it unreachable for anyone running
+// this binary, which is a different class of guarantee.
+//
+// # What this costs, stated because it is a real reduction
+//
+// An operator can no longer enable that transport without changing code. That
+// is only acceptable while all four of these hold: it is upstream-experimental,
+// off by default, used by nothing in this tree, and carries the advisory
+// surface. If any stops being true, revisit this rather than inherit it.
+//
+// # Why it is scoped to `start`
+//
+// The transport is instantiated by the node and by nothing else, so blocking
+// unrelated subcommands would buy no safety and would make the binary useless
+// for the very repair the error asks for. This is not the "a rule scoped to one
+// path misses the next one" mistake: there is one path, and it is this one.
+func refuseExperimentalP2PTransport(cfg *cmtcfg.Config) error {
+	if cfg == nil || !cfg.P2P.LibP2PConfig.Enabled {
+		return nil
+	}
+	// errors.New, not fmt.Errorf: there is nothing to interpolate, and a
+	// format string with no verbs is an invitation for someone to add one
+	// later without noticing the argument list is empty.
+	return errors.New(
+		"refusing to start: the experimental go-libp2p transport is enabled " +
+			"([p2p.libp2p] enabled = true in config.toml).\n" +
+			"This chain does not use it, and it links QUIC, WebTransport, WebRTC " +
+			"and STUN into the node - the entire remaining dependency-advisory " +
+			"surface of this build.\n" +
+			"Set [p2p.libp2p] enabled = false and start again",
+	)
 }
 
 // initCometConfig helps to override default CometBFT Config values.

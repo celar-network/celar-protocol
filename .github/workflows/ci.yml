@@ -39,6 +39,28 @@ jobs:
         working-directory: chain/celard
         run: go build ./...
 
+      - name: generated protobuf still matches its protos
+        # The .pb.go files encode consensus messages and were, until
+        # 2026-09-25, produced by a toolchain that existed on one machine and
+        # nowhere in this repository. Nobody could regenerate them, so nobody
+        # could check that the committed Go still matched the .proto beside
+        # it — the two could disagree silently, in files no one reads.
+        #
+        # This asserts the generator is a no-op on a clean tree. That single
+        # property is the whole guard: if it produces a diff, either the proto
+        # or the generated Go has moved without the other, and the build says
+        # which file rather than a client discovering it at decode time.
+        #
+        # The plugin version comes from go.mod rather than @latest, inside the
+        # script — generation drifting ahead of the library that decodes the
+        # result is the failure this exists to prevent, so it must not
+        # introduce it.
+        run: |
+          sudo apt-get update && sudo apt-get install -y protobuf-compiler
+          ./chain/celard/scripts/protocgen.sh
+          git diff --exit-code -- chain/celard \
+            || { echo "::error::generated protobuf does not match the .proto files; run chain/celard/scripts/protocgen.sh and commit the result"; exit 1; }
+
       - name: build contracts
         # The token's integration tests load the compiled artifact from
         # forge output, which is gitignored. Without this they skip
