@@ -13,6 +13,7 @@ import (
 
 	dbm "github.com/cosmos/cosmos-db"
 	cosmosevmcmd "github.com/cosmos/evm/client"
+	"github.com/cosmos/evm/evmd/relayer"
 	evmdebug "github.com/cosmos/evm/client/debug"
 	"github.com/cosmos/evm/crypto/hd"
 	"github.com/cosmos/evm/evmd"
@@ -233,6 +234,10 @@ func initRootCmd(rootCmd *cobra.Command, evmApp *evmd.EVMD) {
 		genutilcli.InitCmd(evmApp.BasicModuleManager, defaultNodeHome),
 		genutilcli.Commands(evmApp.TxConfig(), evmApp.BasicModuleManager, defaultNodeHome),
 		cmtcli.NewCompletionCmd(rootCmd, true),
+		// Submits attestations a coprocessor wrote. A subcommand rather than a
+		// separate binary so it inherits the signing stack that already exists:
+		// keyring, account, sequence, fees and endpoint.
+		relayer.NewRelayCmd(),
 		evmdebug.Cmd(),
 		confixcmd.ConfigCommand(),
 		pruning.Cmd(sdkAppCreator, defaultNodeHome),

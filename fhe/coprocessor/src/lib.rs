@@ -6,6 +6,7 @@
 //! half of the fraud game rather than an optional client.
 
 pub mod attest;
+pub mod emit;
 pub mod exec;
 pub mod ingest;
 pub mod opstream;
