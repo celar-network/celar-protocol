@@ -246,22 +246,7 @@ func NewExampleApp(
 	bApp.SetInterfaceRegistry(interfaceRegistry)
 	bApp.SetTxEncoder(txConfig.TxEncoder())
 
-	keys := storetypes.NewKVStoreKeys(
-		authtypes.StoreKey, banktypes.StoreKey, stakingtypes.StoreKey,
-		minttypes.StoreKey, distrtypes.StoreKey, slashingtypes.StoreKey,
-		govtypes.StoreKey, consensusparamtypes.StoreKey,
-		upgradetypes.StoreKey, feegrant.StoreKey, evidencetypes.StoreKey, authzkeeper.StoreKey,
-		// ibc keys
-		ibcexported.StoreKey, ibctransfertypes.StoreKey,
-		// Cosmos EVM store keys
-		evmtypes.StoreKey, feemarkettypes.StoreKey, erc20types.StoreKey,
-		// precisebank store key (fractional balances + remainder)
-		precisebanktypes.StoreKey,
-		// per-epoch committee commitment archive; the store name is part of
-		// the proof path the KMS verifier checks
-		epochcommittypes.StoreKey,
-		fraudevidencetypes.StoreKey,
-	)
+	keys := storetypes.NewKVStoreKeys(kvStoreKeyNames()...)
 	oKeys := storetypes.NewObjectStoreKeys(banktypes.ObjectStoreKey, evmtypes.ObjectKey)
 
 	var nonTransientKeys []storetypes.StoreKey
