@@ -24,11 +24,17 @@ import (
 //
 // The contract cannot defend itself. A per-contract salt
 // only moves the target, because CREATE addresses are
-// predictable. The fix is the submitter entering the
-// handle preimage — the same change scoped for input admission in
-// doc/engg/celar-c1-input-proof-scope.md section 3, which
-// closes this and the input-admission front-running
-// together.
+// predictable. Two derivation changes get conflated here and
+// only one of them closes this. Binding the SUBMITTER stops a
+// stranger registering this zero, because a submitter can only
+// derive under their own address — that is the liveness half.
+// It does NOT make the zero account-specific: a contract
+// creating the RECIPIENT's zero binds the sender, so identical
+// operations still derive identical handles for different
+// accounts. Separating per account needs the account as an
+// argument on the state-entry op, which the precompile cannot
+// infer from the call frame, and that is a pending interface
+// amendment rather than a decided fix.
 //
 // This test documents the exposure. It asserts the failure
 // as current behaviour, and must be inverted when the
