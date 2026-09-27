@@ -24,10 +24,40 @@ use crate::sign::sign_attestation;
 use k256::ecdsa::SigningKey;
 
 /// What one poll produced.
+/// One abort, as reported by the chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Abort {
+    /// Where the abort event itself sits.
+    pub at: StreamRef,
+    /// The position of the op that died.
+    pub aborted_at: StreamRef,
+    /// That op's chain-assigned handle, from the abort's `resultHandle`.
+    pub aborted_handle: [u8; 32],
+}
+
 #[derive(Debug)]
 pub struct Polled {
     /// One per executed operation, in canonical order.
     pub attestations: Vec<Attestation>,
+    /// Aborts the chain reported in this range, in canonical order.
+    pub aborts: Vec<Abort>,
+    /// Where consumption stopped, if it stopped before the end of the range.
+    ///
+    /// 🔴 PROVISIONAL, and named rather than buried: whether a consumer
+    /// CONTINUES past an abort or stops is not settled — the field layout is
+    /// declared, the behaviour is not, and it is the one open question on the
+    /// op-stream's abort handling.
+    ///
+    /// This halts, because halting is the existing invariant for anything the
+    /// loop cannot execute and it is the conservative side: a consumer that
+    /// stops attests to nothing it should not. Continuing means deciding what
+    /// happens to ops whose operands the abort just invalidated, and that is a
+    /// decision, not an implementation detail.
+    ///
+    /// Flipping it is deleting one `break`. Until the answer lands, a caller
+    /// can see exactly where it stopped rather than inferring it from a short
+    /// list of attestations.
+    pub halted_at: Option<StreamRef>,
     /// Positions this consumer could not follow yet.
     ///
     /// Reported rather than counted, because "nothing to attest here" and
@@ -88,6 +118,8 @@ impl<S: StreamSource> Service<S> {
 
         let mut attestations = Vec::new();
         let mut deferred = Vec::new();
+        let mut aborts = Vec::new();
+        let mut halted_at = None;
 
         for ev in ordered {
             let at = ev.at;
@@ -124,9 +156,14 @@ impl<S: StreamSource> Service<S> {
                     ));
                 }
                 Outcome::NeedsCiphertextBody { .. } => deferred.push(at),
+                Outcome::Aborted { aborted_at, aborted_handle } => {
+                    aborts.push(Abort { at, aborted_at, aborted_handle });
+                    halted_at = Some(at);
+                    break;
+                }
             }
         }
 
-        Ok(Polled { attestations, deferred })
+        Ok(Polled { attestations, deferred, aborts, halted_at })
     }
 }
