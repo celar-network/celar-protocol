@@ -702,6 +702,125 @@ mod tests {
         }
     }
 
+    // ---- The same retention property, against the COMMITTED CHAIN FIXTURE ----
+    //
+    // The test above uses the in-memory `TestArchive`. This one loads the real
+    // `epochcommit` genesis export (testdata/epochcommit/export-two-epochs.json),
+    // whose commitments came out of the module's own encode/store/decode path —
+    // so the regression runs against chain-produced bytes, not a hand-built
+    // double. Two epochs with a per-seat commitment that changes across the
+    // reshare, which is exactly what the retention property needs.
+
+    #[derive(serde::Deserialize)]
+    struct FixtureCommitment {
+        commitment_sha256: String,
+        keyed_height: String, // proto JSON encodes u64 as a string
+        pk_g_sha256: String,
+        roster_sha256: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct FixtureEntry {
+        commitment: FixtureCommitment,
+        epoch: String,
+        seat_role: u32,
+    }
+    #[derive(serde::Deserialize)]
+    struct FixtureExport {
+        entries: Vec<FixtureEntry>,
+        latest_epoch: String,
+        oldest_retained_epoch: String,
+    }
+
+    /// `EpochCommitmentArchive` backed by the committed chain export. Parsing
+    /// the proto-JSON (u64 fields are strings) mirrors what the KMS verifier's
+    /// eventual ICS23 read must reconstruct from the store.
+    struct FixtureArchive {
+        oldest: u64,
+        latest: u64,
+        by_key: std::collections::HashMap<(u64, u32), ArchivedSeatCommitment>,
+    }
+    impl FixtureArchive {
+        fn load() -> Self {
+            let raw = include_str!("../../testdata/epochcommit/export-two-epochs.json");
+            let export: FixtureExport =
+                serde_json::from_str(raw).expect("parse epochcommit export fixture");
+            let mut by_key = std::collections::HashMap::new();
+            for e in export.entries {
+                let epoch: u64 = e.epoch.parse().expect("fixture epoch is a u64 string");
+                by_key.insert(
+                    (epoch, e.seat_role),
+                    ArchivedSeatCommitment {
+                        commitment_sha256: e.commitment.commitment_sha256,
+                        roster_sha256: e.commitment.roster_sha256,
+                        keyed_height: e.commitment.keyed_height.parse().expect("keyed_height u64"),
+                        pk_g_sha256: e.commitment.pk_g_sha256,
+                    },
+                );
+            }
+            FixtureArchive {
+                oldest: export.oldest_retained_epoch.parse().expect("oldest_retained u64"),
+                latest: export.latest_epoch.parse().expect("latest_epoch u64"),
+                by_key,
+            }
+        }
+    }
+    impl EpochCommitmentArchive for FixtureArchive {
+        fn bounds(&self) -> (u64, u64) {
+            (self.oldest, self.latest)
+        }
+        fn commitment(&self, epoch: u64, seat_role: u32) -> Option<ArchivedSeatCommitment> {
+            self.by_key.get(&(epoch, seat_role)).cloned()
+        }
+    }
+
+    #[test]
+    fn epoch_5_evidence_survives_the_reshare_against_the_chain_fixture() {
+        let arch = FixtureArchive::load();
+        assert_eq!(arch.bounds(), (5, 6), "fixture spans epochs 5..=6");
+
+        // Seat 1's commitment differs across the reshare in the real export
+        // (a5… keyed at 500 for epoch 5, a6… keyed at 600 for epoch 6).
+        let c5 = arch.commitment(5, 1).expect("epoch-5 seat-1 in fixture");
+        let c6 = arch.commitment(6, 1).expect("epoch-6 seat-1 in fixture");
+        assert_ne!(c5, c6, "reshare must have changed the live commitment");
+        assert!(c5.commitment_sha256.starts_with("a5") && c5.keyed_height == 500);
+        assert!(c6.commitment_sha256.starts_with("a6") && c6.keyed_height == 600);
+
+        // A seat-1 record served under epoch 5, header height above the keyed
+        // height (500). Signed under the epoch-5 commitment.
+        let rec = RequestRecord {
+            kind: RequestKind::Reveal,
+            handle: HANDLE.into(),
+            requester: REQUESTER.into(),
+            epoch: 5,
+            header_height: 1002,
+            seat_role: 1,
+        };
+        let msg = rec.signing_bytes().unwrap();
+        let sig = TestSigner::sign(1, &c5.commitment_sha256, &msg);
+
+        // Verifies against the ARCHIVED epoch-5 commitment; NOT against epoch 6 —
+        // the retention property, now on chain-exported bytes.
+        assert!(TestSigner.verify(1, &c5, &msg, &sig));
+        assert!(
+            !TestSigner.verify(1, &c6, &msg, &sig),
+            "epoch-5 evidence must not verify against the epoch-6 commitment"
+        );
+
+        // Resolution + entry-binding route correctly against the fixture's real
+        // bounds and keyed height.
+        assert!(matches!(resolve_epoch(&arch, 5, 1), ArchiveResolution::Found(_)));
+        assert!(matches!(
+            resolve_epoch(&arch, 4, 1),
+            ArchiveResolution::TimeBarred { oldest_retained: 5 }
+        ));
+        assert!(matches!(
+            resolve_epoch(&arch, 7, 1),
+            ArchiveResolution::NeverExisted { latest: 6 }
+        ));
+        assert!(check_entry_binding(&rec, &c5).is_ok());
+    }
+
     // ---- Entry-binding rules ---------------------------------------------
 
     #[test]
