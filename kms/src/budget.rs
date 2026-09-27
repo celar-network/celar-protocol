@@ -141,9 +141,16 @@ pub const DECOUPLED_FLOODING_STATSEC: u32 = 46;
 /// decoupled parameter: there is no headroom above it (λ=47 fails the margin).
 pub const MAX_SAFE_LAMBDA_STAT_DECOUPLED: u32 = 46;
 
-/// Contributions summed into the decoupled mask (the 79-of-100 construction).
-/// Named so the ≈6.3-bit width overhead in the derivation above is traceable,
-/// not a magic number.
+/// Contributions summed into the decoupled mask. Named so the ≈6.3-bit width
+/// overhead in the derivation above is traceable, not a magic number.
+///
+/// ⚠️ This VALUE is inherited from the retired permissionless-scale committee,
+/// and it is a count rather than a description: it sets the width overhead above
+/// and therefore the λ bound that follows from it. At the verified genesis size
+/// the sum has FEWER terms, so the present value is conservative rather than
+/// unsafe — it would only be unsafe if contributions ever exceeded it.
+/// Re-deriving it is a flooding-parameter decision for the lane that owns this
+/// module, not a comment correction.
 pub const DECOUPLED_CONTRIBUTIONS: u32 = 79;
 
 /// log₂ of the flooding-mask sampling bound on the production (large-session

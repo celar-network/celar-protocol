@@ -386,7 +386,8 @@ pub async fn run_local_threshold_decrypt(
 /// run sources them from the distributed mask supply. The session's corruption
 /// threshold is the Reed-Solomon tolerance ⌊(n−degree−1)/2⌋, decoupled from the
 /// key's sharing degree — so this runs the true production shape (e.g. degree 78
-/// on 100 seats, 79-of-100) at dev parameters with no committee-size ceiling.
+/// on 100 seats — illustrative arithmetic, not a size anything has run at) at
+/// dev parameters with no committee-size ceiling.
 /// Only the production-*parameter* memory/wall confirmation rides a rented
 /// large-committee ceremony; the correctness of the topology does not.
 pub async fn run_decoupled_threshold_decrypt(
@@ -406,8 +407,8 @@ pub async fn run_decoupled_threshold_decrypt(
     // robust-open enforces — floor((n - degree - 1)/2), §7.5 — NOT the degree.
     // This is the decoupling: a degree-`d` key on `n` seats tolerates
     // t = floor((n - d - 1)/2) corruptions, so n >= 3t+1 holds comfortably even
-    // when the degree is close to the committee size (degree 78 on 100 seats
-    // tolerates 10 — the 79-of-100 production shape) rather than demanding the
+    // when the degree is close to the committee size (d = 78 with n = 100
+    // tolerates 10 — arithmetic, not a deployed shape) rather than demanding the
     // impossible n >= 3*degree+1 that a threshold-equals-degree session forces.
     if parties < degree + 1 {
         bail!(

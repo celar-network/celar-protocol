@@ -3,7 +3,8 @@
 //! Threshold decryption floods the opened value with a mask `E = Σ e_i` so the
 //! revealed phase leaks nothing about the secret key beyond the plaintext. When
 //! a key's sharing degree is decoupled from the committee's corruption
-//! threshold (a degree-78 key on a 100-seat committee), the mask must be
+//! threshold (a key shared at a degree close to the committee size), the mask
+//! must be
 //! **born at the key's degree**, or a low-degree coalition reconstructs the
 //! mask polynomial in advance and subtracts it — restoring the exact leakage
 //! flooding exists to prevent (the "strip attack").
