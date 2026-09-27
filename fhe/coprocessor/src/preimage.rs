@@ -49,3 +49,25 @@ pub(crate) fn stream_ref_bytes(at: &StreamRef) -> [u8; 16] {
     out
 }
 
+
+/// The inverse of `stream_ref_bytes`, for the abort event's `aux`.
+///
+/// §3.4 says `aux` carries the aborted `streamRef` and does not pin its byte
+/// encoding. This is the ONLY packing of these three fields the protocol pins
+/// anywhere, so using a second one here would create exactly the drift this
+/// module exists to prevent. If §3.4 turns out to specify another, this
+/// function is the one line that changes — which is the reason it is here and
+/// not inlined at the call site.
+pub(crate) fn stream_ref_from_bytes(b: &[u8; 16]) -> StreamRef {
+    let mut h = [0u8; 8];
+    h.copy_from_slice(&b[..8]);
+    let mut t = [0u8; 4];
+    t.copy_from_slice(&b[8..12]);
+    let mut l = [0u8; 4];
+    l.copy_from_slice(&b[12..]);
+    StreamRef {
+        height: u64::from_be_bytes(h),
+        tx_index: u32::from_be_bytes(t),
+        log_index: u32::from_be_bytes(l),
+    }
+}

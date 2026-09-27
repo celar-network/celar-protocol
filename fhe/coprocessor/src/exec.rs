@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use celar_zama::backend::{Backend, FheError, Handle as BackendHandle};
 
+use crate::ingest::StreamRef;
 use crate::opstream::StreamEvent;
 
 /// §3's opcode table.
@@ -24,6 +25,10 @@ pub mod op {
     pub const NOT: u8 = 0x1A;
     pub const SELECT: u8 = 0x20;
     pub const CAST: u8 = 0x21;
+    /// §3.4. Not an operation: the chain reporting that one died. It has
+    /// carried this code since v0.1 in §6; §3's table omitted it until v0.10,
+    /// which is why a consumer implementing §3 as normative met it as unknown.
+    pub const ABORT: u8 = 0xF0;
 }
 
 pub type ChainHandle = [u8; 32];
@@ -37,6 +42,14 @@ pub enum Outcome {
     /// as an outcome rather than an error: the stream is well formed and this
     /// consumer simply cannot follow it here yet.
     NeedsCiphertextBody { commitment: [u8; 32] },
+    /// §3.4: the chain aborted an op. Nothing is executed and nothing is
+    /// attested — the subject is another event, not this one.
+    ///
+    /// `resultHandle` carries the ABORTED op's handle rather than this event's
+    /// result, which is opcode-dependent behaviour of that field and the one
+    /// case where misreading it is silent: a consumer treating it as "the
+    /// result of this event" would register a handle for an op that never ran.
+    Aborted { aborted_at: StreamRef, aborted_handle: ChainHandle },
 }
 
 #[derive(Debug)]
@@ -88,6 +101,19 @@ impl Executor {
                 })
             }
         };
+
+        // Before the operand machinery: an abort is not an operation and the
+        // operand rules do not apply to it.
+        if e.opcode == op::ABORT {
+            want(0)?;
+            let aux: [u8; 16] = e.aux.as_slice().try_into().map_err(|_| {
+                ExecError::Aux("abort aux is not a 16-byte stream reference")
+            })?;
+            return Ok(Outcome::Aborted {
+                aborted_at: crate::preimage::stream_ref_from_bytes(&aux),
+                aborted_handle: e.result_handle,
+            });
+        }
 
         let out = match e.opcode {
             op::VERIFY_INPUT => {
