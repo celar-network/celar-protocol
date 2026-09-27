@@ -1498,13 +1498,21 @@ pub async fn run_distributed_reshare(
 
     cfg.validate()?;
     let n = cfg.committee.parties;
-    // Old sharing degree = the committee's session threshold — the same
-    // derivation the single-process upward reshare uses.
-    let old_degree = CommitteeConfig {
-        parties: n,
-        ..Default::default()
-    }
-    .session_threshold();
+    // Old sharing degree = the degree the genesis ACTUALLY sharded at, read from
+    // its transcript (recorded there per the threshold-in-transcript work), NOT
+    // the ⌊(n−1)/3⌋ default. A secure-large genesis shards at t ≤ ⌊(n−1)/4⌋, so
+    // assuming the default would reshare a wrong-degree sharing and the set-1
+    // reconstruction would fail on exactly those (correct) low-t keys — the same
+    // class the single-process reshare's actual-degree fix already addressed.
+    // Falls back to the default only when no transcript is present in `in_dir`.
+    let old_degree = match crate::transcript::Transcript::load(&in_dir.join("transcript.json")) {
+        Ok(t) => t.committee.session_threshold,
+        Err(_) => CommitteeConfig {
+            parties: n,
+            ..Default::default()
+        }
+        .session_threshold(),
+    };
     if new_degree <= old_degree {
         bail!("new degree {new_degree} must exceed the old degree {old_degree}");
     }
