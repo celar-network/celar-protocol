@@ -1,0 +1,14 @@
+Celar node (celard)
+
+This directory is a modified fork of the Cosmos EVM reference application
+"evmd", taken from https://github.com/cosmos/evm at tag v0.7.0, and is
+distributed under the Apache License, Version 2.0 (see LICENSE in this
+directory).
+
+Copyright Evmos Authors - Tharsis Labs Ltd - https://github.com/evmos/os/
+Copyright 2025, Interchain Labs - https://github.com/cosmos/evm/
+
+Modifications by Celar Network, 2026. Modified files are identified by the
+repository's git history relative to the upstream tag; per Apache-2.0 §4(b),
+files carrying Celar changes are being marked with a header notice as they
+are touched.

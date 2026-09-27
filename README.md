@@ -88,3 +88,14 @@ curl -s -X POST http://127.0.0.1:8545 -H 'Content-Type: application/json' \
 The same seed works in both MetaMask (`0x…`) and the `celard` keyring (`celar1…`)
 — `celard` uses eth_secp256k1 keys / BIP-44 coin type 60, so it's one account,
 two address encodings, one balance.
+
+## License
+
+Celar's original code in this repository is © Celar Network; its license is
+being finalised and will be announced. Until then, all rights are reserved.
+
+Third-party components: `chain/celard` is a modified fork of
+[cosmos/evm](https://github.com/cosmos/evm) `evmd` (Apache-2.0 — see
+`chain/celard/LICENSE` and `chain/celard/NOTICE`). `kms/` and
+`fhe/backend-adapter/zama` depend on, but do not redistribute,
+[zama-ai/kms](https://github.com/zama-ai/kms) and TFHE-rs (BSD-3-Clause-Clear).
