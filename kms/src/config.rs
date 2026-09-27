@@ -3,13 +3,15 @@
 //! Two thresholds are deliberately distinct (whitepaper §7.1 mapping,
 //! reconstruction quorum vs robustness bound — the v0.9.10 disclosure):
 //!
-//! - `reconstruction_quorum` — Celar's t = ⌊3c/4⌋+1 (§7.7 genesis rule;
-//!   79 at c=100 as the DESIGN TARGET). The number of partials a requester
-//!   must combine, and the quorum the servability/combination layer enforces.
-//!   NOTE (v0.9.22): production ceremonies under the current preprocessing
-//!   engine deploy a threshold of 24 at c=100 — 25 seats suffice to
-//!   reconstruct. 79 is not yet what is deployed; see whitepaper §7.1 for
-//!   both figures and the path between them.
+//! - `reconstruction_quorum` — Celar's t = ⌊3c/4⌋+1 (§7.7 genesis rule). The
+//!   number of partials a requester must combine, and the quorum the
+//!   servability/combination layer enforces. Committee size and the deployed
+//!   threshold are CONFIGURATION rather than constants here, and no ceremony
+//!   has been run at c = 100 — the preprocessing engine cannot reach it — so
+//!   any quorum quoted at that size is a derived bound, never a deployed one.
+//!   This comment deliberately states no committee size: the previous version
+//!   asserted a threshold was deployed at a size nothing has ever run at, and
+//!   justified it by citing a document that had since changed.
 //! - `session_threshold` — the MPC corruption bound handed to the upstream
 //!   protocol session (their tests run n=4/t=1, n=5/t=1). Defaults to
 //!   ⌊(c−1)/3⌋, the classic robust-MPC bound.
@@ -280,16 +282,16 @@ mod tests {
         assert_eq!(cfg.reconstruction_quorum(), 23);
         assert!(cfg.is_genesis_scale());
 
-        // and 79 at c=100 (permissionless scale).
+        // and 76 at c=100 — a DERIVED bound, not a configuration anything runs.
         let cfg = CommitteeConfig {
             parties: 100,
             ..Default::default()
         };
         assert_eq!(cfg.reconstruction_quorum(), 76);
-        // NOTE: ⌊3·100/4⌋+1 = 76, not 79. The whitepaper's 79-of-100 is the
-        // permissionless-scale constant, not this formula — the formula is the
-        // §7.7 GENESIS rule. Keeping this assertion honest rather than forcing
-        // 79 documents exactly the seam flagged in the module docs.
+        // NOTE: ⌊3·100/4⌋+1 = 76. The retired permissionless-scale figure was
+        // never this formula's output — the formula is the §7.7 GENESIS rule.
+        // Keeping this assertion honest rather than forcing the old figure
+        // documents exactly the seam flagged in the module docs.
     }
 
     #[test]
