@@ -49,14 +49,21 @@ pub mod transcript;
 /// "genesis-scale" tests exercised roster rules rather than a sharing. Found while
 /// from the λ-blowup check and the committee-size finding.
 ///
-/// Why 7 rather than 6: degree 6 gives 63 parties, which covers the genesis range
-/// 30–50 but **not** §7.7's permissionless c=100, so it would buy a second
-/// migration later. Degree 7 gives 127 and covers every committee size the
-/// whitepaper publishes. The cost is real and must be measured — a residue
-/// polynomial carries `EXTENSION_DEGREE` coefficients, so ring arithmetic, share
-/// size, PRSS and DKG all widen by ~1.75× against the recorded 4-degree baseline
-/// (secure DKG 98.9 s at c=4). If measurement rules 7 out, 6 remains available and
-/// the compile-time assertion still holds for the genesis range alone.
+/// Why 7 rather than 6 (the choice as it was made, 2026-08-20): degree 6 gives 63
+/// parties, which covers the genesis range 30–50 but not a 100-seat permissionless
+/// committee, so it would buy a second migration later; degree 7 gives 127 and
+/// covered every committee size then envisioned. The cost is real and was measured —
+/// a residue polynomial carries `EXTENSION_DEGREE` coefficients, so ring arithmetic,
+/// share size, PRSS and DKG all widen by ~1.75× against the recorded 4-degree
+/// baseline (secure DKG 98.9 s at c=4).
+///
+/// CURRENT STATE: a 100-seat committee is NOT reachable on this engine — the upward
+/// reshare walls above ~30 seats and a secure 100-seat genesis exceeds fleet RAM —
+/// so degree 7's reach beyond the genesis range 30–50 is now deliberate HEADROOM,
+/// not a requirement for a reachable size. Degree 6 would suffice for every
+/// reachable committee; 7 is kept because it is already shipped and the headroom is
+/// cheap insurance, not because a larger committee is planned. The compile-time
+/// assertion holds for the genesis range regardless.
 pub const EXTENSION_DEGREE: usize = 7;
 
 /// The upstream pin, recorded into every transcript. Pin history:

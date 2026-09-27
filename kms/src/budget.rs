@@ -141,16 +141,23 @@ pub const DECOUPLED_FLOODING_STATSEC: u32 = 46;
 /// decoupled parameter: there is no headroom above it (λ=47 fails the margin).
 pub const MAX_SAFE_LAMBDA_STAT_DECOUPLED: u32 = 46;
 
-/// Contributions summed into the decoupled mask. Named so the ≈6.3-bit width
-/// overhead in the derivation above is traceable, not a magic number.
+/// Upper bound on the number of contributions summed into the decoupled mask —
+/// the count the decryption-margin derivation above is taken against, so the
+/// ≈6.3-bit width overhead (log₂ of this) is traceable rather than a magic number.
 ///
-/// ⚠️ This VALUE is inherited from the retired permissionless-scale committee,
-/// and it is a count rather than a description: it sets the width overhead above
-/// and therefore the λ bound that follows from it. At the verified genesis size
-/// the sum has FEWER terms, so the present value is conservative rather than
-/// unsafe — it would only be unsafe if contributions ever exceeded it.
-/// Re-deriving it is a flooding-parameter decision for the lane that owns this
-/// module, not a comment correction.
+/// DELIBERATELY A CONSERVATIVE UPPER BOUND, not the contribution count of any one
+/// deployment. Every reachable committee sums FEWER terms than this (the quorum is
+/// degree+1, and every reachable committee size is well under this), so the margin
+/// holds with more room than the derivation claims and the λ ceiling it yields (46)
+/// is stricter than any reachable config needs. It becomes unsafe only if a
+/// committee ever sums MORE than this many contributions — hence it is an upper
+/// bound, and the safety test `full_contribution_sum_fits_the_decryption_margin`
+/// multiplies it directly, so it must always be ≥ the runtime contribution count.
+///
+/// Kept at this value ON PURPOSE: lowering it to a reachable size would RELAX the
+/// λ ceiling (fewer terms ⇒ a looser bound), which is a deliberate
+/// flooding-parameter retune with security consequences, not a tidy-up.
+/// It stays as the safe ceiling until such a retune is actually wanted.
 pub const DECOUPLED_CONTRIBUTIONS: u32 = 79;
 
 /// log₂ of the flooding-mask sampling bound on the production (large-session
