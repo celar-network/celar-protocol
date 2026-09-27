@@ -62,9 +62,13 @@ import {TFHE, euint64, ebool} from "./TFHE.sol";
 ///
 /// This contract cannot defend itself. A per-contract salt
 /// only moves the target, since CREATE addresses are
-/// predictable. The fix is the submitter entering the
-/// handle preimage — the change that closes this and
-/// input-admission front-running together.
+/// predictable. Binding the submitter into the preimage
+/// closes the squat — a submitter can only derive under
+/// their own address — and does NOT make the zero
+/// account-specific, because this contract creates the
+/// RECIPIENT's zero and would bind the sender. Closing that
+/// half needs the account as an argument on the state-entry
+/// op, which is a pending interface amendment.
 /// Documented rather than mitigated, because a mitigation
 /// that reads like protection and isn't is worse than a
 /// stated exposure.
@@ -424,8 +428,10 @@ contract ConfidentialERC20 {
     ///
     /// INTERIM. This makes the collision survivable; it does not
     /// address the root cause, which is that the handle preimage
-    /// omits the submitter, so identical operations by different
-    /// callers derive identical handles. Whether a shared handle
+    /// carries no per-account separator, so identical operations
+    /// for different accounts derive identical handles. Binding
+    /// the submitter does not supply one: the account whose zero
+    /// this is need not be the one who sent the transaction. Whether a shared handle
     /// denotes one underlying balance or two is not yet settled.
     function _record(euint64 h, address account) private {
         _issuedTo[euint64.unwrap(h)][account] = true; // idempotent
