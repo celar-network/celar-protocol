@@ -10,6 +10,7 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 
+use celar_coprocessor::attest::Attestation;
 use celar_coprocessor::service::Service;
 use celar_coprocessor::source::{JsonRpc, RpcSource};
 use k256::ecdsa::SigningKey;
@@ -112,6 +113,19 @@ fn main() {
             for a in &polled.attestations {
                 println!("  {a:?}");
             }
+
+            // Written where the chain side can read it. The point is not that
+            // Rust can serialise: it is that the Go verifier reconstructs the
+            // same preimage from the same fields and recovers the same signer.
+            // Both sides pass their own tests and agree with a hand-written
+            // vector; neither has met the other's output from a real chain.
+            let out = std::path::Path::new("../../testdata/attestation/live-devnet.json");
+            if let Some(dir) = out.parent() {
+                std::fs::create_dir_all(dir).expect("create testdata dir");
+            }
+            std::fs::write(out, vector_json(chain_id, &polled.attestations))
+                .expect("write vector");
+            println!("wrote {}", out.display());
         }
         Err(e) => {
             // The position is the point. A failure without one leaves you
@@ -120,4 +134,26 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+/// Unprefixed lowercase hex, chain id alongside — the preimage binds it, so a
+/// vector without it cannot be checked by the other side.
+fn vector_json(chain_id: u64, attestations: &[Attestation]) -> String {
+    let mut out = String::from("{\n");
+    out.push_str(&format!("  \"chain_id\": {chain_id},\n"));
+    out.push_str("  \"attestations\": [\n");
+    for (i, a) in attestations.iter().enumerate() {
+        out.push_str("    {\n");
+        out.push_str(&format!("      \"height\": {},\n", a.at.height));
+        out.push_str(&format!("      \"tx_index\": {},\n", a.at.tx_index));
+        out.push_str(&format!("      \"log_index\": {},\n", a.at.log_index));
+        out.push_str(&format!("      \"result_handle\": \"{}\",\n", hex::encode(a.result_handle)));
+        out.push_str(&format!("      \"ct_digest\": \"{}\",\n", hex::encode(a.ct_digest)));
+        out.push_str(&format!("      \"env_version\": {},\n", a.env_version));
+        out.push_str(&format!("      \"coprocessor_id\": \"{}\",\n", hex::encode(a.coprocessor_id)));
+        out.push_str(&format!("      \"signature\": \"{}\"\n", hex::encode(&a.signature)));
+        out.push_str(if i + 1 == attestations.len() { "    }\n" } else { "    },\n" });
+    }
+    out.push_str("  ]\n}\n");
+    out
 }
