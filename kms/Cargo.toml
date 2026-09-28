@@ -58,7 +58,7 @@ algebra = { package = "threshold-algebra", git = "https://github.com/celar-netwo
 # Must match the kms workspace pins exactly — these types cross the API
 # boundary (tfhe::Tag; tonic/rustls types into GrpcNetworkingManager).
 # Matched against main@c6b0fdd3.
-tfhe = "=1.7.0"
+tfhe = { version = "=1.7.0", features = ["zk-pok"] }
 tonic = "=0.14.6"
 tokio-rustls = { version = "=0.26.4", default-features = false, features = ["aws_lc_rs"] }
 x509-parser = { version = "=0.18.1", features = ["verify-aws"] }
