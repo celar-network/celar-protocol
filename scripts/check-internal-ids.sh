@@ -53,8 +53,24 @@ LANES='(Track [ABCD]\b|ENGG-[12]|engineer #[12]|work order|celar-progress-tracke
 #
 # Patterns are shared with the file scan below deliberately: two regexes for
 # one rule is two records of one fact, and this project has paid for that.
+# The message may arrive as an argument or on stdin. Argument first, because
+# that is how everyone reaches for it, and reading stdin when there is none
+# BLOCKS: the script sits waiting for a terminal EOF with no prompt and no
+# usage, which reads as "the check is slow" and ends with the check being
+# skipped. It was, on 2026-09-28, on a public comment.
+#
+# A guard that hangs when called wrongly is worse than one that fails: a
+# failure is read, a hang is worked around.
 if [ "${1:-}" = "--text" ]; then
-  message=$(cat)
+  if [ "$#" -ge 2 ]; then
+    message=$2
+  elif [ -t 0 ]; then
+    echo "usage: $0 --text 'message'    (or pipe the message on stdin)" >&2
+    echo "refusing to wait on an empty terminal: nothing is being checked." >&2
+    exit 2
+  else
+    message=$(cat)
+  fi
   hit=0
   printf '%s\n' "$message" | grep -nE "$IDS" && hit=1
   printf '%s\n' "$message" | grep -nE "$LANES" && hit=1
