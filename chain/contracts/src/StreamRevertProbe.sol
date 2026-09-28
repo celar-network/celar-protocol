@@ -3,6 +3,12 @@ pragma solidity ^0.8.28;
 
 import "./TFHE.sol";
 
+/// ⚠️ THIS CONTRACT IS SUPPOSED TO FAIL. `workThenRevert` reverts every time,
+/// unconditionally and on purpose — it is not broken and it is not unfinished.
+/// It is a test instrument: the only way to check that a reverted frame leaves
+/// no stream events behind is to have a frame that reliably reverts after doing
+/// real encrypted work. Nothing deploys this outside the test suite.
+///
 /// Exists only to test one property of the op-stream: that a reverted call
 /// frame leaves no stream events behind.
 ///

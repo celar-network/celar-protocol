@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 Celar M1 bake-off harness — runs the required op set against ANY backend behind
-the frozen ABI and emits the report tables from doc/celar-backend-bakeoff-spec.md.
+the frozen ABI and emits the report tables the backend bake-off specification
+calls for. That specification is internal; the ABI it tests against is in this
+repository, under fhe/backend-adapter/.
 
 Runs today against MockBackend (proves the framework end-to-end). In Phase 1 an
 engineer registers ZamaBackend / OpenFHEBackend in adapter.available_backends()

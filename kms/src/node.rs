@@ -356,8 +356,9 @@ fn vrf_contribution_msg(epoch: u64, index: u64) -> Vec<u8> {
 /// degrades to "predictable to the seat" rather than "to the coalition"
 /// (the adopted contribution-randomness control). Verifiable by the seat's rostered pubkey — see
 /// `verify_vrf_contribution`. v1 reuses ed25519-sign-as-VRF: adequate for the
-/// entropy purpose, not a strict RFC-9381 ECVRF
-/// (design: `doc/engg/tasks/vrf-contribution-seeds/design.md`).
+/// entropy purpose, not a strict RFC-9381 ECVRF — a substitution recorded as
+/// deliberate in Celar's internal design notes, and flagged there for review if
+/// the audit story ever needs strict uniqueness.
 pub fn vrf_contribution_output(key_path: &Path, epoch: u64, index: u64) -> Result<Vec<u8>> {
     use ed25519_dalek::{Signer, SigningKey};
     let raw = fs::read_to_string(key_path)

@@ -60,6 +60,6 @@ key_*.pem
 # but the .key is seat-only secret material — never commit or distribute).
 signing_*.key
 
-# Local working copy of a doc-repo file; canonical version lives in
-# doc/engg/celar-onboarding-track-b.md
+# Local working copy of a file whose canonical version lives in Celar's
+# internal documentation repository, not here.
 /celar-onboarding-track-b.md
