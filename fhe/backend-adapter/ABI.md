@@ -17,7 +17,7 @@ Grouped by the three planes they touch. Every op is deterministic w.r.t. its inp
 | Op | Signature | Notes |
 |----|-----------|-------|
 | `verifyInput` | `(bytes ciphertext, proof) → handle` | Verifies π_in (well-formedness + range + knowledge); registers the handle. Rejects on invalid proof. Gates state admission. |
-| `trivialEncrypt` | `(uint64 value, uint8 k) → handle` | Public constant → ciphertext (no proof; value is public). |
+| `trivialEncrypt` | `(uint64 value, uint8 k, address principal) → handle` | Public constant → ciphertext (no proof; value is public). **`principal` is REQUIRED and the zero address is refused.** The handle derives from the calling contract AND the principal, so a contract's value for one account is unreachable from any other caller, and two accounts of one contract do not share a handle. A blank principal would make the separator optional in practice, which is why it is rejected rather than defaulted. *This is not the admission rule: `verifyInput` binds the submitter and must not bind the caller — the two ops differ in who the subject is.* |
 
 ### B. Homomorphic compute (coprocessor-evaluated, §6, §8)
 | Op | Signature | Notes |
@@ -60,7 +60,7 @@ provide). They overlap but are not identical:
 | ABI op | Backend method | Note |
 |---|---|---|
 | `verifyInput` | `verify_input(ciphertext, proof)` | backend verifies the proof and admits the ciphertext |
-| `trivialEncrypt` | `trivial_encrypt(value, k)` | |
+| `trivialEncrypt` | `trivial_encrypt(value, k)` | The backend surface is UNCHANGED by the principal argument, and so is the op stream. The principal decides handle derivation, which is chain-assigned and already carried in `resultHandle`; it does not affect the ciphertext a backend computes or the digest a coprocessor attests. So `aux` still carries `value ‖ width`, and the decoder does not move with the ABI. |
 | `add`, `sub` | `add`, `sub` | |
 | `le`, `lt`, `eq` | `le`, `lt`, `eq` | |
 | `and`, `or`, `not` | `and_`, `or_`, `not_` | trailing underscore: Python keywords |

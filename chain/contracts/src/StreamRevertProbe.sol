@@ -22,8 +22,8 @@ contract StreamRevertProbe {
     /// Does genuine FHE work — enough to emit several stream events — and
     /// then reverts unconditionally.
     function workThenRevert() external {
-        euint64 a = TFHE.asEuint64(7);
-        euint64 b = TFHE.asEuint64(5);
+        euint64 a = TFHE.asEuint64(7, address(this));
+        euint64 b = TFHE.asEuint64(5, address(this));
         euint64 sum = TFHE.add(a, b);
         ebool fits = TFHE.le(b, sum);
         euint64 picked = TFHE.select(fits, b, a);
@@ -35,8 +35,8 @@ contract StreamRevertProbe {
     /// "no events after revert" cannot distinguish the revert working from
     /// the contract never having emitted anything.
     function workAndKeep() external returns (bytes32) {
-        euint64 a = TFHE.asEuint64(7);
-        euint64 b = TFHE.asEuint64(5);
+        euint64 a = TFHE.asEuint64(7, address(this));
+        euint64 b = TFHE.asEuint64(5, address(this));
         euint64 sum = TFHE.add(a, b);
         ebool fits = TFHE.le(b, sum);
         euint64 picked = TFHE.select(fits, b, a);

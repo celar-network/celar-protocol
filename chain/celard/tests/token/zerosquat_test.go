@@ -10,67 +10,87 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
-// TFHE.asEuint64(0) derives the same handle for every
-// caller on the chain — keccak(domainTag || trivialEncrypt
-// || abi(0,64)) — trivialEncrypt takes no handle operands
-// so it skips the compute-access check, and registration
-// is first-writer-wins with no revocation.
+// The shared encrypted zero, and why it is no longer squattable.
 //
-// So any account can register the shared encrypted zero to
-// itself for the price of one call, and every contract
-// that later depends on it is permanently broken: the
-// constructor cannot grant on it, and _ensure re-derives
-// the same foreign-owned handle forever.
+// It used to be. TFHE.asEuint64(0) derived one handle for every caller on the
+// chain, trivialEncrypt skips the compute-access check because it takes no
+// handle operands, and registration is first-writer-wins with no revocation.
+// So any account could register that handle to itself for the price of one
+// call, after which a contract needing an encrypted zero could not grant on it
+// and re-derived the same foreign-owned handle forever: deployment, or every
+// mint and transfer, failed permanently. It was found by accident — a probe in
+// this suite called trivialEncrypt from an EOA and the next deployment broke.
 //
-// The contract cannot defend itself. A per-contract salt
-// only moves the target, because CREATE addresses are
-// predictable. Two derivation changes get conflated here and
-// only one of them closes this. Binding the SUBMITTER stops a
-// stranger registering this zero, because a submitter can only
-// derive under their own address — that is the liveness half.
-// It does NOT make the zero account-specific: a contract
-// creating the RECIPIENT's zero binds the sender, so identical
-// operations still derive identical handles for different
-// accounts. Separating per account needs the account as an
-// argument on the state-entry op, which the precompile cannot
-// infer from the call frame, and that is a pending interface
-// amendment rather than a decided fix.
+// The state-entry op now takes the account as a required argument and derives
+// from the CALLER and that account. Both halves matter and each alone fails:
+// with only the caller, every user of one contract still collides; with only
+// the account, an outsider names someone else's account and squats it anyway.
 //
-// This test documents the exposure. It asserts the failure
-// as current behaviour, and must be inverted when the
-// derivation changes.
-func TestSharedZeroHandleCanBeSquatted(t *testing.T) {
+// This file is the inversion of the test that demonstrated the exposure. It
+// keeps the attack rather than deleting it, and asserts that it now fails.
+func TestSharedZeroIsNoLongerSquattable(t *testing.T) {
 	tk := deployToken(t)
 
-	// Deploy succeeded, so the token owns Z. A squatter
-	// registering it first would have broken deployment —
-	// shown here by the reverse: the squatter now cannot
-	// take it, because first-writer-wins already resolved.
+	// The victim account has NO balance yet, so the contract has not derived
+	// its zero. That is the only moment the squat was ever reachable: once a
+	// balance exists, _ensure never re-derives and the attack has nothing to
+	// take.
+	//
+	// Asserted through the token's BEHAVIOUR rather than by comparing the
+	// squatter's handle against one this test predicts. A predicted handle
+	// shares a formula with the chain, so dropping a field from both sides
+	// keeps the comparison true and the test green — which is exactly what
+	// happened to the first version of this test under mutation.
 	sel := crypto.Keccak256(
-		[]byte("trivialEncrypt(uint64,uint8)"))[:4]
+		[]byte("trivialEncrypt(uint64,uint8,address)"))[:4]
 	data := append([]byte{}, sel...)
-	data = append(data, common.LeftPadBytes(
-		big.NewInt(0).Bytes(), 32)...)
-	data = append(data, common.LeftPadBytes(
-		big.NewInt(64).Bytes(), 32)...)
+	data = append(data, common.LeftPadBytes(big.NewInt(0).Bytes(), 32)...)
+	data = append(data, common.LeftPadBytes(big.NewInt(64).Bytes(), 32)...)
+	data = append(data, common.LeftPadBytes(tk.other.Bytes(), 32)...)
 
 	pre := common.HexToAddress(
 		"0x0000000000000000000000000000000000000900")
 	res, err := tk.k.CallEVMWithData(
-		tk.ctx, tk.db, tk.other, &pre, data,
+		tk.ctx, tk.db, tk.owner, &pre, data,
 		true, false, big.NewInt(5_000_000))
 	if err != nil {
-		t.Fatalf("probe: %v", err)
+		t.Fatalf("squat probe: %v", err)
 	}
+	t.Logf("squatter registered %x naming %s as principal",
+		common.BytesToHash(res.Ret), tk.other.Hex())
 
-	zero := common.BytesToHash(res.Ret)
-	t.Logf("shared encrypted zero: %x — derived "+
-		"identically for every caller, owned by "+
-		"whoever registered it first", zero)
+	// The token must still be able to give that account a balance. If the
+	// squatter's call reached the handle this contract derives for that
+	// account, _ensure now re-derives a foreign-owned handle, the grant
+	// fails, and this mint reverts — which is the original defect exactly.
+	tk.send(t, tk.owner, "mint", tk.other, uint64(100))
 
-	// The ordering is the whole vulnerability: whoever
-	// calls first owns it, and nothing can revoke it.
-	if zero == (common.Hash{}) {
-		t.Fatal("expected a derived handle")
+	if got := tk.balanceOf(t, tk.other); got == (common.Hash{}) {
+		t.Fatal("the account has no balance after a successful mint")
+	}
+}
+
+// A blank principal would make the separator optional in practice: every
+// account of one contract could pass it, and the intra-contract collision the
+// argument exists to close would come straight back. Required means refused,
+// not defaulted.
+func TestZeroPrincipalIsRefused(t *testing.T) {
+	tk := deployToken(t)
+
+	sel := crypto.Keccak256(
+		[]byte("trivialEncrypt(uint64,uint8,address)"))[:4]
+	data := append([]byte{}, sel...)
+	data = append(data, common.LeftPadBytes(big.NewInt(0).Bytes(), 32)...)
+	data = append(data, common.LeftPadBytes(big.NewInt(64).Bytes(), 32)...)
+	data = append(data, make([]byte, 32)...)
+
+	pre := common.HexToAddress(
+		"0x0000000000000000000000000000000000000900")
+	if _, err := tk.k.CallEVMWithData(
+		tk.ctx, tk.db, tk.other, &pre, data,
+		true, false, big.NewInt(5_000_000),
+	); err == nil {
+		t.Fatal("a zero principal was accepted: the separator is optional " +
+			"in practice, whatever the signature says")
 	}
 }

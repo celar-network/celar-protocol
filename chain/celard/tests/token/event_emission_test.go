@@ -40,7 +40,10 @@ func TestEventFiresOnZeroValueTransfer(t *testing.T) {
 	tk := deployToken(t)
 	tk.send(t, tk.owner, "mint", tk.owner, uint64(100))
 
-	zero := deriveHandle("trivialEncrypt", trivialArgs(0))
+	// The owner's own zero: _ensure records it to the account it belongs to,
+	// so it is the zero handle this caller was issued and may spend.
+	zero := deriveStateEntryHandle(tk, "trivialEncrypt",
+		tk.owner, trivialArgs(0, tk.owner))
 	var amount [32]byte
 	copy(amount[:], zero.Bytes())
 
