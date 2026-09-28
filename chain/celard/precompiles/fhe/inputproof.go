@@ -80,10 +80,14 @@ const (
 // never regenerates a proof because of it) and small enough that a copied
 // proof is dead within the hour even under a hypothesised binding weakness.
 //
-// PROVISIONAL VALUE, sized at one-second blocks; it is pinned as a block
-// count against the measured devnet block time and inclusion latency before
-// anything ships against it. A submitter may always choose a shorter expiry.
-const MaxExpiryWindowBlocks uint64 = 1800
+// PINNED AGAINST MEASUREMENT (2026-09-28, single-validator devnet):
+// block time 5.153s averaged over 200-block window; submission-to-inclusion
+// 1 block in 30/30 sends (the idle floor — the cap is sized to the wall-clock
+// target, not to congestion, and carries ~100x headroom over inclusion).
+// 1800s / 5.153s per block ≈ 349 → 350. If the deployed chain's block time
+// changes materially, re-derive from the same basis: ~30 minutes of wall
+// clock, expressed in blocks. A submitter may always choose a shorter expiry.
+const MaxExpiryWindowBlocks uint64 = 350
 
 // parseInputProofEnvelope splits the verifyInput proof argument into the
 // public-input tuple and the proof body. Malformed envelopes error — an
