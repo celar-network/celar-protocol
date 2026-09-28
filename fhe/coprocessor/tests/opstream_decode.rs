@@ -6,7 +6,7 @@
 //! pinned to the specification rather than to each other. An encoder checked
 //! against itself agrees with itself.
 
-use celar_coprocessor::opstream::{decode, DecodeError, StreamEvent};
+use celar_coprocessor::opstream::{decode, DecodeError};
 
 /// `select` (opcode 0x20), ebool result, three operands, hcu 3000, one aux byte.
 ///

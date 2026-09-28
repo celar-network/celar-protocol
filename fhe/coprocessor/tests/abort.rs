@@ -10,7 +10,7 @@
 use celar_coprocessor::exec::{op, Executor, Outcome};
 use celar_coprocessor::ingest::{RawEvent, StreamRef, StreamSource};
 use celar_coprocessor::opstream::{decode, ENVELOPE_VERSION};
-use celar_coprocessor::service::Service;
+use celar_coprocessor::service::{DeferReason, Service};
 use k256::ecdsa::SigningKey;
 use tfhe::set_server_key;
 
@@ -91,33 +91,85 @@ fn an_abort_whose_aux_is_not_a_position_is_refused() {
 }
 
 #[test]
-fn consumption_halts_at_an_abort_and_the_dead_handle_is_never_registered() {
+fn an_abort_defers_its_dependents_and_consumption_continues() {
     arm();
     let before = at(1, 0);
     let abort_at = at(1, 1);
-    let after = at(1, 2);
+    let dependent = at(1, 2);
+    let independent = at(1, 3);
     let dead = [0xDD; 32];
+
+    // add(dead, dead) — an op whose operand the abort just invalidated. It is
+    // deferred, not skipped and not fatal: the chain reassigns, so the operand
+    // is pending rather than missing.
+    let dependent_data = envelope(op::ADD, 6, &[dead, dead], [0xEE; 32], 10_000, &[]);
 
     let source = Fixed(vec![
         RawEvent { at: before, data: trivial(7, 0x01) },
         RawEvent { at: abort_at, data: abort_of(&at(1, 9), dead) },
-        RawEvent { at: after, data: trivial(9, 0x02) },
+        RawEvent { at: dependent, data: dependent_data },
+        RawEvent { at: independent, data: trivial(9, 0x02) },
     ]);
 
     let key = SigningKey::from_slice(&[0x11u8; 32]).unwrap();
     let mut svc = Service::new(source, 1, key);
-    let polled = svc.poll(1, 1).expect("a well-formed abort is not an error");
+    let polled = svc.poll(1, 1).expect("an abort is not an error");
 
-    assert_eq!(polled.attestations.len(), 1, "only the op before the abort is attested");
+    // The independent op AFTER the abort is still executed. Halting here would
+    // make one aborted op stop everything behind it — a stalling coprocessor,
+    // which is what the stream's pattern exists to prevent.
+    assert_eq!(
+        polled.attestations.len(),
+        2,
+        "expected the ops before AND after the abort to be attested: halting \
+         on an abort is what this behaviour was changed away from"
+    );
     assert_eq!(polled.attestations[0].at, before);
+    assert_eq!(polled.attestations[1].at, independent);
+
     assert_eq!(polled.aborts.len(), 1);
     assert_eq!(polled.aborts[0].aborted_at, at(1, 9));
-    assert_eq!(polled.halted_at, Some(abort_at));
 
-    // The property this file exists for.
+    // The dependent is reported as pending-operand, not as an unknown handle.
+    assert_eq!(polled.deferred.len(), 1);
+    assert_eq!(polled.deferred[0].at, dependent);
+    assert_eq!(
+        polled.deferred[0].reason,
+        DeferReason::OperandPending { handle: dead },
+        "a dependent of an aborted op must read as PENDING — 'unknown handle' \
+         would send a reader hunting for a decode fault that is not there"
+    );
+
+    // The property the previous version of this test also held.
     assert!(
         svc.executor().resolve(&dead).is_none(),
         "the aborted op's handle was registered: later ops would execute \
          against a result the chain says does not exist"
     );
+}
+
+#[test]
+fn deferral_propagates_through_a_dependent_chain() {
+    arm();
+    let dead = [0xDD; 32];
+    let first = [0xEE; 32];
+
+    // abort → add(dead,dead)=first → add(first,first). The second dependent
+    // never touches the aborted handle directly; it is deferred because its
+    // operand's PRODUCER was deferred. Without propagation it would reach the
+    // executor as an unknown handle and take the whole range down with it.
+    let source = Fixed(vec![
+        RawEvent { at: at(2, 0), data: abort_of(&at(2, 9), dead) },
+        RawEvent { at: at(2, 1), data: envelope(op::ADD, 6, &[dead, dead], first, 10_000, &[]) },
+        RawEvent { at: at(2, 2), data: envelope(op::ADD, 6, &[first, first], [0xFF; 32], 10_000, &[]) },
+        RawEvent { at: at(2, 3), data: trivial(5, 0x03) },
+    ]);
+
+    let key = SigningKey::from_slice(&[0x11u8; 32]).unwrap();
+    let mut svc = Service::new(source, 2, key);
+    let polled = svc.poll(2, 2).expect("a well-formed abort is not an error");
+
+    assert_eq!(polled.deferred.len(), 2, "deferral did not propagate: {:?}", polled.deferred);
+    assert_eq!(polled.deferred[1].reason, DeferReason::OperandPending { handle: first });
+    assert_eq!(polled.attestations.len(), 1, "the independent op should still execute");
 }

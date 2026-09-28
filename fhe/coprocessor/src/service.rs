@@ -41,23 +41,6 @@ pub struct Polled {
     pub attestations: Vec<Attestation>,
     /// Aborts the chain reported in this range, in canonical order.
     pub aborts: Vec<Abort>,
-    /// Where consumption stopped, if it stopped before the end of the range.
-    ///
-    /// 🔴 PROVISIONAL, and named rather than buried: whether a consumer
-    /// CONTINUES past an abort or stops is not settled — the field layout is
-    /// declared, the behaviour is not, and it is the one open question on the
-    /// op-stream's abort handling.
-    ///
-    /// This halts, because halting is the existing invariant for anything the
-    /// loop cannot execute and it is the conservative side: a consumer that
-    /// stops attests to nothing it should not. Continuing means deciding what
-    /// happens to ops whose operands the abort just invalidated, and that is a
-    /// decision, not an implementation detail.
-    ///
-    /// Flipping it is deleting one `break`. Until the answer lands, a caller
-    /// can see exactly where it stopped rather than inferring it from a short
-    /// list of attestations.
-    pub halted_at: Option<StreamRef>,
     /// Positions this consumer could not follow yet.
     ///
     /// Reported rather than counted, because "nothing to attest here" and
@@ -65,7 +48,31 @@ pub struct Polled {
     /// should ever be quiet. Admission carries a commitment and a
     /// data-availability pointer; the body does not ride the stream, so a
     /// consumer cannot execute it until that layer exists.
-    pub deferred: Vec<StreamRef>,
+    pub deferred: Vec<Deferred>,
+}
+
+/// One position this consumer did not execute, and why it did not.
+///
+/// The reason is carried rather than implied. "Deferred" alone collapses two
+/// different situations — a body that has not arrived and an operand whose
+/// producer died — and only one of them ever resolves by waiting for a data
+/// layer that does not exist yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Deferred {
+    pub at: StreamRef,
+    pub reason: DeferReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeferReason {
+    /// Admission: the commitment and the availability pointer are on the
+    /// stream, the ciphertext body is not, and no data-availability layer
+    /// exists to fetch it from.
+    CiphertextBodyUnavailable,
+    /// An operand's producing op was aborted by the chain. The operand is
+    /// PENDING, not missing: §6 says the chain reassigns, so the value is
+    /// expected to arrive at a later position rather than never.
+    OperandPending { handle: [u8; 32] },
 }
 
 #[derive(Debug)]
@@ -119,7 +126,16 @@ impl<S: StreamSource> Service<S> {
         let mut attestations = Vec::new();
         let mut deferred = Vec::new();
         let mut aborts = Vec::new();
-        let mut halted_at = None;
+
+        // Handles whose producing op the chain aborted, plus handles produced
+        // by ops we deferred because of one. Membership means PENDING, not
+        // missing: §6 has the chain reassign, so the value is expected later at
+        // another position.
+        //
+        // Deferral has to propagate. An op whose operand is pending cannot
+        // execute, and its own result is then pending for the same reason — so
+        // a whole dependent subgraph defers rather than one op.
+        let mut pending: std::collections::HashSet<[u8; 32]> = Default::default();
 
         for ev in ordered {
             let at = ev.at;
@@ -130,6 +146,20 @@ impl<S: StreamSource> Service<S> {
             // constant operand", no skipping a select with a known predicate.
             // Each would produce a correct value with a different digest, and
             // the fraud game reads that as a cheat.
+            // Checked BEFORE executing, not after. The executor would refuse a
+            // pending operand as an unknown handle, which is the right refusal
+            // with the wrong reason: unknown means never seen, pending means
+            // seen and coming. Reporting the first would send a reader looking
+            // for a decode fault that is not there.
+            if let Some(h) = decoded.operands.iter().find(|h| pending.contains(*h)) {
+                deferred.push(Deferred {
+                    at,
+                    reason: DeferReason::OperandPending { handle: **&h },
+                });
+                pending.insert(decoded.result_handle);
+                continue;
+            }
+
             let outcome = self
                 .executor
                 .execute(&decoded)
@@ -155,15 +185,24 @@ impl<S: StreamSource> Service<S> {
                         &ct_digest,
                     ));
                 }
-                Outcome::NeedsCiphertextBody { .. } => deferred.push(at),
+                Outcome::NeedsCiphertextBody { .. } => {
+                    deferred.push(Deferred {
+                        at,
+                        reason: DeferReason::CiphertextBodyUnavailable,
+                    });
+                    pending.insert(decoded.result_handle);
+                }
                 Outcome::Aborted { aborted_at, aborted_handle } => {
+                    // CONTINUE past the abort. Halting here would make one
+                    // aborted op stop consumption of everything behind it in
+                    // the range — which is a stalling coprocessor, the exact
+                    // thing §6's pattern exists to prevent.
                     aborts.push(Abort { at, aborted_at, aborted_handle });
-                    halted_at = Some(at);
-                    break;
+                    pending.insert(aborted_handle);
                 }
             }
         }
 
-        Ok(Polled { attestations, deferred, aborts, halted_at })
+        Ok(Polled { attestations, deferred, aborts })
     }
 }

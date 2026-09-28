@@ -8,7 +8,7 @@
 use celar_coprocessor::attest::signing_preimage;
 use celar_coprocessor::exec::op;
 use celar_coprocessor::ingest::{RawEvent, StreamRef, StreamSource};
-use celar_coprocessor::service::{Service, ServiceError};
+use celar_coprocessor::service::{DeferReason, Deferred, Service, ServiceError};
 use celar_coprocessor::sign::coprocessor_id;
 
 use k256::ecdsa::{RecoveryId, Signature, SigningKey, VerifyingKey};
@@ -162,7 +162,18 @@ fn admission_is_deferred_rather_than_attested_or_dropped() {
     let out = svc.poll(3, 3).expect("a well-formed admission is not an error");
 
     assert!(out.attestations.is_empty(), "nothing executed, so nothing attested");
-    assert_eq!(out.deferred, vec![StreamRef { height: 3, tx_index: 0, log_index: 0 }]);
+    // Asserting the REASON, not just the position. This test predates the
+    // reason existing, and "deferred at height 3" was true of an aborted op's
+    // dependent too - so the old assertion passed for two different causes and
+    // could not tell them apart. The comment above it always claimed the
+    // distinction; now the assertion carries it.
+    assert_eq!(
+        out.deferred,
+        vec![Deferred {
+            at: StreamRef { height: 3, tx_index: 0, log_index: 0 },
+            reason: DeferReason::CiphertextBodyUnavailable,
+        }]
+    );
 }
 
 #[test]
