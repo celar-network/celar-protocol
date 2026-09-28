@@ -347,7 +347,8 @@ pub const VRF_SEED_DOMAIN: &[u8] = b"celar.kms.mask.contribution-seed.v1";
 /// length prefix keeps `vrf_output ‖ local_entropy` unambiguous for any
 /// `vrf_output` length. This layer is KEY-AGNOSTIC: `vrf_output` is computed by
 /// the caller, which holds the seat's key, so the VRF/key choice is not baked in
-/// here (design: `doc/engg/tasks/vrf-contribution-seeds/design.md`).
+/// here — that choice is recorded in Celar's internal design notes and is
+/// deliberately not a property of this function.
 pub fn vrf_mixed_contribution_seed(vrf_output: &[u8], local_entropy: &[u8; 32]) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(VRF_SEED_DOMAIN);
