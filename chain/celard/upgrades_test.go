@@ -3,6 +3,9 @@ package evmd
 import (
 	"sort"
 	"testing"
+
+	bankkeeper "github.com/cosmos/cosmos-sdk/x/bank/keeper"
+	precisebankkeeper "github.com/cosmos/evm/evmd/precisebank/keeper"
 )
 
 // Every store the app mounts must be accounted for as either present at genesis
@@ -78,5 +81,41 @@ func TestUpgradeAddsTheNonGenesisStores(t *testing.T) {
 		if genesis[s] {
 			t.Fatalf("store %q is claimed both at genesis and as added", s)
 		}
+	}
+}
+
+// The ERC20 precompile's native-coin send path cannot work on this chain, and
+// this test exists so that stays a decision rather than a surprise.
+//
+// Upstream's erc20 message server type-switches on the bank keeper and accepts
+// only bankkeeper.BaseKeeper or a pointer to it, erroring on anything else.
+// app.go hands erc20 the PRECISEBANK keeper, deliberately, because that is what
+// gives the EVM eighteen decimals over a nine-decimal bank denom. So every
+// native-coin transfer through that precompile reverts with "invalid keeper
+// type".
+//
+// It is latent rather than live: nothing activates that precompile and no token
+// pair is registered, so the path is unreachable today. It becomes reachable the
+// first time someone wants a wrapped-native or IBC-ERC20 surface.
+//
+// The decision recorded against this is: document the absence and enforce it,
+// rather than fork the chain's core EVM dependency for a surface nothing needs
+// yet, and rather than hand erc20 the base bank keeper — which would compile,
+// pass, and move nine-decimal units where the EVM believes eighteen.
+//
+// ⚠️ WHAT THIS TEST DOES AND DOES NOT DO. It pins the type incompatibility, so
+// it fails if upstream widens the accepted types or if precisebank starts
+// satisfying them — either of which means the decision above can be revisited.
+// It does NOT prove the wiring is still precisebank: that lives in app.go and a
+// test in this package cannot read it without constructing the app. If someone
+// switches erc20 to the base bank keeper, this test keeps passing and the
+// decimals break silently. That gap is named here rather than papered over.
+func TestErc20PrecompileStillCannotTakePrecisebank(t *testing.T) {
+	var k any = precisebankkeeper.Keeper{}
+	switch k.(type) {
+	case bankkeeper.BaseKeeper, *bankkeeper.BaseKeeper:
+		t.Fatal("precisebank now satisfies the erc20 message server's type " +
+			"switch: the native-coin path may be enableable, and the decision " +
+			"to document its absence should be revisited rather than inherited")
 	}
 }
