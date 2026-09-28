@@ -5,11 +5,12 @@
 Celar is pre-launch. Nothing in this repository is deployed with real value;
 the network described in the whitepaper is not yet live. Security review of
 the design is in progress, and the whitepaper discloses known limitations of
-the current construction openly (see, for example, the corruption-model
-mapping in section 7.1, which states the deployed confidentiality threshold
-alongside the design target). A disclosed limitation is not a vulnerability
-report; a bug that lets an attacker exceed what the documentation says the
-system permits is.
+the current construction openly — see, for example, the corruption-model
+mapping in section 7.1, which states the confidentiality threshold of the
+configuration that has actually been keyed and verified, and separately what a
+larger committee would provide and why that committee is not currently
+reachable. A disclosed limitation is not a vulnerability report; a bug that
+lets an attacker exceed what the documentation says the system permits is.
 
 ## Reporting a vulnerability
 
@@ -37,12 +38,13 @@ publishing it.
 
 In scope: the code in this repository — the chain node (`chain/`), the
 threshold key-management service (`kms/`), the FHE backend adapter (`fhe/`),
-and the contracts (`chain/contracts/`).
+and the contracts (`chain/contracts/`) — and `github.com/celar-network/kms`,
+Celar's fork of the Zama KMS, from which `kms/` builds.
 
 Out of scope: vulnerabilities in upstream dependencies (report those
-upstream — cosmos/evm, zama-ai/kms, TFHE-rs — and let us know so we can track
-the fix), the marketing website, and denial-of-service against development
-infrastructure.
+upstream — cosmos/evm, zama-ai/kms upstream, TFHE-rs — and let us know so we
+can track the fix), the marketing website, and denial-of-service against
+development infrastructure.
 
 ## Safe harbour
 
