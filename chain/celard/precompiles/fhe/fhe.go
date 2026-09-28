@@ -96,8 +96,26 @@ func (p Precompile) Run(
 			return nil, err
 		}
 		proof, _ := args[1].([]byte)
-		if len(proof) == 0 {
-			return nil, errors.New("fhe precompile: empty proof rejected")
+		// The proof argument carries the public-input envelope ahead of the
+		// proof body (see inputproof.go). The context checks are enforced
+		// chain-side; the body goes to the verifier seam — a development
+		// stub until the proof-system verifier lands, and admission is not
+		// authenticated until it does.
+		pub, proofBody, err := parseInputProofEnvelope(proof)
+		if err != nil {
+			return nil, fmt.Errorf("fhe precompile: %w", err)
+		}
+		if err := checkAdmissionBinding(
+			pub,
+			evm.ChainConfig().ChainID,
+			evm.Origin,
+			contract.Caller(),
+			evm.Context.BlockNumber.Uint64(),
+		); err != nil {
+			return nil, fmt.Errorf("fhe precompile: %w", err)
+		}
+		if err := (stubInputProofVerifier{}).VerifyInputProof(pub, proofBody); err != nil {
+			return nil, fmt.Errorf("fhe precompile: %w", err)
 		}
 		h := p.deriveAdmissionHandle(method, argBz, evm.Origin)
 		p.registerHandle(evm.StateDB, h, contract.Caller(),
