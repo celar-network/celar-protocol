@@ -6,22 +6,26 @@ import (
 	"testing"
 )
 
-// Handles name a computation trace, not an account. Two accounts minted
-// the same amount therefore share a balance handle — add(Z, 100) is the
-// same handle whoever computes it — and no attacker is involved: the
-// collision is reachable by two honest users doing an ordinary thing.
+// Two accounts minted the same amount no longer share a balance handle.
 //
-// Under first-writer-wins provenance the second holder was locked out of
-// its own balance. Provenance is now a claimant SET, and this test pins
-// that both holders can spend.
+// They used to. A handle named a computation trace and nothing else, so
+// add(Z, 100) was the same handle whoever computed it, and the two accounts
+// arrived at identical bytes by doing an ordinary thing — no attacker
+// involved. This test asserted that collision and pinned the claimant-set
+// provenance that made it survivable.
 //
-// Whether a shared handle denotes one underlying balance or two is NOT
-// answerable at this layer: _balances is keyed per account, sub(H100, 40)
-// yields H60 whether or not anyone else did the same, and nothing reverts
-// in either world. It is answered by decryption in
-// fhe/backend-adapter/zama/tests/collision.rs — two balances; the shared
-// operand is never mutated, and 60+60+40+40 closes against the 200 minted.
-func TestTwoAccountsMintedTheSameAmount(t *testing.T) {
+// The state-entry op now binds the calling contract and the account, so each
+// account's encrypted zero is its own and everything built on it diverges.
+// The test is inverted rather than deleted: it is the record that the
+// collision was demonstrated before it was closed, and it is the guard that
+// would fail first if the principal ever stopped reaching the derivation.
+//
+// What this does NOT claim: that equal balances are indistinguishable in
+// general. It claims the specific trace that produced identical handles no
+// longer does. Two accounts whose balances were reached by identical traces
+// from the same principal would still collide, which is a property of the
+// compute ops and out of scope here.
+func TestTwoAccountsMintedTheSameAmountDoNotCollide(t *testing.T) {
 	tk := deployToken(t)
 
 	// other is minted first, owner second — same amount.
@@ -30,27 +34,29 @@ func TestTwoAccountsMintedTheSameAmount(t *testing.T) {
 
 	a := tk.balanceOf(t, tk.other)
 	b := tk.balanceOf(t, tk.owner)
-	if a != b {
-		t.Fatalf("expected a shared handle, got %x vs %x", a, b)
+	if a == b {
+		t.Fatalf("two accounts minted the same amount share a balance "+
+			"handle (%x): the principal is not reaching the state-entry "+
+			"derivation, and anyone reading the two storage slots learns "+
+			"the balances are equal without decrypting anything", a)
 	}
 
-	var amt [32]byte
-	copy(amt[:], a.Bytes())
+	// Each spends its own, and neither can spend the other's — the claimant
+	// record is what enforces that, and it outlives the collision it was
+	// introduced for.
+	var amtA [32]byte
+	copy(amtA[:], a.Bytes())
+	tk.send(t, tk.other, "confidentialTransfer", tk.owner, amtA)
 
-	// The first holder spends the shared handle.
-	tk.send(t, tk.other, "confidentialTransfer", tk.owner, amt)
+	if err := tk.sendExpectingRevert(t, tk.owner,
+		"confidentialTransfer", tk.other, amtA); err == nil {
+		t.Fatal("an account spent a handle issued to somebody else: with " +
+			"handles no longer shared, this is the confused deputy rather " +
+			"than an honest collision")
+	}
+	tk.refresh(t)
 
-	// The second holder spends the SAME handle. This is the regression:
-	// it reverted under first-writer-wins, because the handle had been
-	// bound to whichever account minted first.
-	tk.send(t, tk.owner, "confidentialTransfer", tk.other, amt)
-
-	// Value moved on both spends — neither account is left holding the
-	// handle it started with.
 	if got := tk.balanceOf(t, tk.other); got == a {
 		t.Fatalf("first holder's balance unchanged after spending: %x", got)
-	}
-	if got := tk.balanceOf(t, tk.owner); got == a {
-		t.Fatalf("second holder's balance unchanged after spending: %x", got)
 	}
 }

@@ -114,45 +114,54 @@ func withoutMints(ev []*evmtypes.Log) []*evmtypes.Log {
 	return out
 }
 
-// 1. A re-entrant call inside the callback cannot DISPLACE a
-// claimant.
+// 1. A re-entrant call inside the callback cannot cost the
+// original holder its own balance.
 //
-// Asserted through what membership authorises rather than by
-// reading the mapping, which is private: the original holder
-// of a shared handle must still be able to spend it after a
-// re-entrant call has recorded new claimants. Under the
-// first-writer-wins rule this replaced, that spend reverted.
+// ⚠️ THIS TEST WAS NARROWED when the state-entry op began
+// binding the account. It used to assert that a re-entrant
+// call could not DISPLACE a claimant of a SHARED handle, and
+// it built that premise by minting the same amount to two
+// accounts — which used to produce one handle for both.
 //
-// Note the assertion is NOT that the re-entrant call was
-// refused. It succeeds, deliberately — the guard is scoped to
-// the callback path, and a receiver making an ordinary
-// transfer is legitimate.
-func TestReentrantCallbackCannotDisplaceAClaimant(t *testing.T) {
+// That premise no longer exists, and it cannot be rebuilt: two
+// accounts now derive different zeros, so equal mints give
+// different balances, and a transfer credits a fresh select
+// result claimed only by the recipient. There is no reachable
+// construction in which two accounts claim one handle.
+//
+// That is worth stating rather than quietly dropping, because
+// it means the claimant record's SET shape is no longer
+// load-bearing for the reason it was introduced. What it still
+// does is stop an account spending a handle it was never
+// issued — the confused deputy, pinned by deputy_test.go — and
+// that is why the mapping stays.
+//
+// What remains testable, and is tested here: a re-entrant call
+// inside the callback must not leave the original holder
+// unable to spend its own balance. The assertion is NOT that
+// re-entry is refused — it succeeds deliberately, since a
+// receiver making an ordinary transfer is legitimate.
+func TestReentrantCallbackLeavesTheHolderAbleToSpend(t *testing.T) {
 	f := deployToken(t)
-
-	// Two accounts minted the same amount share a balance
-	// handle: handles are deterministic and the traces are
-	// identical. That collision is the premise, not a bug
-	// being tested here.
 	f.send(t, f.owner, "mint", f.owner, uint64(100))
 	f.send(t, f.owner, "mint", f.other, uint64(100))
-	shared := f.balanceOf(t, f.other)
-	if shared != f.balanceOf(t, f.owner) {
-		t.Fatalf("premise failed: equal mints did not collide")
-	}
+
+	amount := f.balanceOf(t, f.owner)
 
 	r := deployReceiver(t, f, "ReentrantReceiver", f.addr, f.other)
 	f.send(t, f.owner, "confidentialTransferAndCall",
-		r.addr, shared, []byte{})
+		r.addr, amount, []byte{})
 
 	if !r.readBool(t, f, "reentered") {
 		t.Fatalf("receiver never re-entered; the test proves nothing")
 	}
-	// The claim survives: `other` still spends the shared handle.
-	if err := f.sendExpectingRevert(t, f.other,
-		"confidentialTransfer", f.owner, shared); err != nil {
-		t.Fatalf("re-entrancy displaced a claimant: %v", err)
-	}
+
+	// The holder still spends what it now holds. Under a rule that let a
+	// re-entrant call overwrite provenance, this reverts.
+	after := f.balanceOf(t, f.other)
+	var amt [32]byte
+	copy(amt[:], after.Bytes())
+	f.send(t, f.other, "confidentialTransfer", f.owner, amt)
 }
 
 // 2. The callback fires AFTER the credit.

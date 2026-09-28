@@ -131,7 +131,31 @@ func (p Precompile) Run(
 		}
 		return method.Outputs.Pack(h)
 
-	case TrivialEncryptMethod, AddMethod, SubMethod, LeMethod, LtMethod,
+	// ---- state entry: the ONLY op that binds principals -------------------
+	//
+	// Separated from the compute ops deliberately. Three ops, three different
+	// rules, and the reason they differ is who the subject is: at admission the
+	// SUBMITTER is the subject, so verifyInput binds it and must not bind the
+	// caller; here the subject is a third party the contract names, so both the
+	// caller and an explicit principal are bound; a compute result's subject is
+	// whatever its operands already carry, so it binds neither.
+	case TrivialEncryptMethod:
+		if err := p.checkComputeAccess(evm.StateDB, contract.Caller(), method, argBz, readonly); err != nil {
+			return nil, err
+		}
+		principal, err := trivialEncryptPrincipal(method, argBz)
+		if err != nil {
+			return nil, err
+		}
+		h := p.deriveStateEntryHandle(method, argBz, contract.Caller(), principal)
+		ktype := p.resultKType(evm.StateDB, method, argBz)
+		p.registerHandle(evm.StateDB, h, contract.Caller(), ktype, readonly)
+		if err := p.emitStreamEvent(evm, method, argBz, h, ktype, readonly); err != nil {
+			return nil, err
+		}
+		return method.Outputs.Pack(h)
+
+	case AddMethod, SubMethod, LeMethod, LtMethod,
 		EqMethod, AndMethod, OrMethod, NotMethod, SelectMethod, CastMethod:
 		if err := p.checkComputeAccess(evm.StateDB, contract.Caller(), method, argBz, readonly); err != nil {
 			return nil, err
@@ -224,6 +248,77 @@ func (p Precompile) deriveAdmissionHandle(
 	preimage = append(preimage, submitter.Bytes()...)
 	preimage = append(preimage, argBz...)
 	return crypto.Keccak256Hash(preimage)
+}
+
+// deriveStateEntryHandle computes the handle for a state-entry op:
+//
+//	handle = keccak256(domainTag || methodName || caller || principal || rawArgs)
+//
+// Both principals, because each alone was proposed and each fails. The CALLER
+// alone leaves every user of one contract colliding, since a token's
+// derivations are identical for all of them. The PRINCIPAL alone is still
+// squattable: an attacker calls with principal = bob and first-writer-wins does
+// the rest. With the caller bound, a contract's handle for bob is unreachable
+// from any other caller, so there is nothing to squat; with the principal
+// bound, two users of one contract stop colliding.
+//
+// The principal is also inside rawArgs, being an argument, so it hashes twice.
+// That is the declared preimage implemented literally rather than tidied: code
+// diverging from the published formula is a worse defect than a redundant
+// thirty-two bytes.
+//
+// This is NOT the admission rule, and one fix does not cover both ops.
+// verifyInput binds the submitter and must not bind the caller — there an
+// attacker re-admits a copied ciphertext carrying a victim's secret, and the
+// caller says nothing about whose secret it is.
+//
+// Ownership is unaffected: registration stays with contract.Caller(). Owning to
+// the principal instead was rejected, because allow is owner-only, so a zero
+// owned by bob is a zero the token cannot grant on — today's breakage recreated.
+func (p Precompile) deriveStateEntryHandle(
+	method *abi.Method,
+	argBz []byte,
+	caller common.Address,
+	principal common.Address,
+) common.Hash {
+	preimage := make([]byte, 0,
+		len(domainTag)+len(method.Name)+2*common.AddressLength+len(argBz))
+	preimage = append(preimage, []byte(domainTag)...)
+	preimage = append(preimage, []byte(method.Name)...)
+	preimage = append(preimage, caller.Bytes()...)
+	preimage = append(preimage, principal.Bytes()...)
+	preimage = append(preimage, argBz...)
+	return crypto.Keccak256Hash(preimage)
+}
+
+// trivialEncryptPrincipal reads the required principal argument.
+//
+// The zero address is REFUSED. Nothing in the amendment says so, and it has to:
+// if address(0) is accepted, every user of one contract can pass it and the
+// intra-contract collision the principal exists to close comes straight back.
+// An argument that may be left blank is an optional separator wearing a
+// required signature, and optional-versus-required is the distinction this
+// whole amendment turns on.
+func trivialEncryptPrincipal(method *abi.Method, argBz []byte) (common.Address, error) {
+	args, err := method.Inputs.Unpack(argBz)
+	if err != nil {
+		return common.Address{}, err
+	}
+	if len(args) != 3 {
+		return common.Address{}, fmt.Errorf(
+			"fhe precompile: trivialEncrypt takes 3 arguments, got %d", len(args))
+	}
+	principal, ok := args[2].(common.Address)
+	if !ok {
+		return common.Address{}, errors.New(
+			"fhe precompile: trivialEncrypt principal is not an address")
+	}
+	if principal == (common.Address{}) {
+		return common.Address{}, errors.New(
+			"fhe precompile: trivialEncrypt principal must not be the zero address; " +
+				"a blank principal makes the separator optional and restores the collision")
+	}
+	return principal, nil
 }
 
 // packHandle derives the stub handle and ABI-Packs it as the single

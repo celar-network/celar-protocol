@@ -63,17 +63,26 @@ library TFHE {
     /// Public constant to encrypted value. Carries no
     /// secrecy — the value is public by definition.
     ///
-    /// WARNING: the handle is derived without the caller,
-    /// so every contract on the chain calling asEuint64(0)
-    /// derives the same handle, and registration is
-    /// first-writer-wins with no revocation. Any account
-    /// can claim it for one call and permanently break
-    /// every contract that later needs it. Until the
-    /// submitter enters the preimage, this is an
-    /// exposure, not a convenience — see the shared-zero
-    /// note in ConfidentialERC20.sol.
-    function asEuint64(uint64 value) internal returns (euint64) {
-        bytes32 r = _call(abi.encodeWithSignature("trivialEncrypt(uint64,uint8)", value, uint8(64)));
+    /// `principal` is the account this value belongs to,
+    /// and it is REQUIRED. The handle derives from the
+    /// calling contract AND the principal, so a contract's
+    /// zero for one account is unreachable from any other
+    /// caller, and two accounts of one contract no longer
+    /// share a handle.
+    ///
+    /// Passing address(0) reverts. A blank principal would
+    /// make the separator optional in practice, and every
+    /// account of one contract could pass it — which is the
+    /// collision this argument exists to close.
+    ///
+    /// Pick the principal by asking whose state the value
+    /// becomes: a balance's owner for a balance, and the
+    /// contract itself for a value the contract owns, such
+    /// as an aggregate or a scratch constant.
+    function asEuint64(uint64 value, address principal) internal returns (euint64) {
+        bytes32 r = _call(
+            abi.encodeWithSignature("trivialEncrypt(uint64,uint8,address)", value, uint8(64), principal)
+        );
         return euint64.wrap(r);
     }
 

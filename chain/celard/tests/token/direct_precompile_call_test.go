@@ -53,10 +53,15 @@ func TestDirectTransactionToPrecompileAddress(t *testing.T) {
 	)
 	tf := factory.New(nw, grpc.NewIntegrationHandler(nw))
 
-	sel := crypto.Keccak256([]byte("trivialEncrypt(uint64,uint8)"))[:4]
+	// The state-entry op takes a required principal. An EOA calling directly
+	// names itself: there is no contract in the frame, so caller and principal
+	// are the same address here, which is the degenerate case and still valid.
+	sel := crypto.Keccak256(
+		[]byte("trivialEncrypt(uint64,uint8,address)"))[:4]
 	data := append([]byte{}, sel...)
 	data = append(data, common.LeftPadBytes(big.NewInt(42).Bytes(), 32)...)
 	data = append(data, common.LeftPadBytes(big.NewInt(64).Bytes(), 32)...)
+	data = append(data, common.LeftPadBytes(keys.GetKey(0).Addr.Bytes(), 32)...)
 
 	res, err := tf.ExecuteEthTx(keys.GetPrivKey(0), evmtypes.EvmTxArgs{
 		To:       &fhePrecompile,

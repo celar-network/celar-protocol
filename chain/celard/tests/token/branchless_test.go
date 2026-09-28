@@ -29,10 +29,20 @@ func TestTransferIsBranchlessAndNeverRevertsOnBalance(t *testing.T) {
 	var amount [32]byte
 	copy(amount[:], bal.Bytes())
 
-	zero := deriveHandle("trivialEncrypt", trivialArgs(0))
+	// Two DIFFERENT zeros now, where one used to serve both. The scratch zero
+	// inside select belongs to the contract; the zero the recipient's balance
+	// is built on belongs to the recipient. They were the same handle only
+	// because the state-entry op bound no principal — which is the collision
+	// this amendment closed, visible here as the test needing two names for
+	// what it used to call one thing.
+	scratchZero := deriveStateEntryHandle(tk, "trivialEncrypt",
+		tk.addr, trivialArgs(0, tk.addr))
+	recipientZero := deriveStateEntryHandle(tk, "trivialEncrypt",
+		tk.other, trivialArgs(0, tk.other))
+
 	le := deriveHandle("le", words(bal, bal))
-	actual := deriveHandle("select", words(le, bal, zero))
-	credited := deriveHandle("add", words(zero, actual))
+	actual := deriveHandle("select", words(le, bal, scratchZero))
+	credited := deriveHandle("add", words(recipientZero, actual))
 
 	logs := tk.sendCollectingLogs(t, tk.owner,
 		"confidentialTransfer", tk.other, amount)

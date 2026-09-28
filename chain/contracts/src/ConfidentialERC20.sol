@@ -60,15 +60,17 @@ import {TFHE, euint64, ebool} from "./TFHE.sol";
 /// same foreign-owned handle forever: deployment or every
 /// mint and transfer fails permanently.
 ///
-/// This contract cannot defend itself. A per-contract salt
-/// only moves the target, since CREATE addresses are
-/// predictable. Binding the submitter into the preimage
-/// closes the squat — a submitter can only derive under
-/// their own address — and does NOT make the zero
-/// account-specific, because this contract creates the
-/// RECIPIENT's zero and would bind the sender. Closing that
-/// half needs the account as an argument on the state-entry
-/// op, which is a pending interface amendment.
+/// CLOSED. The state-entry op now takes the account as a
+/// required argument and derives from the calling contract
+/// AND that account, so this contract's zero for one
+/// account is unreachable from any other caller and two of
+/// its accounts no longer share a handle. A per-contract
+/// salt would not have worked — CREATE addresses are
+/// predictable — and binding the submitter alone would not
+/// have either, because this contract creates the
+/// RECIPIENT's zero and the submitter is the sender.
+/// The exposure below is kept as the record of what was
+/// demonstrated before it was fixed.
 /// Documented rather than mitigated, because a mitigation
 /// that reads like protection and isn't is worse than a
 /// stated exposure.
@@ -191,7 +193,7 @@ contract ConfidentialERC20 {
         symbol = symbol_;
         _contractURI = uri_;
         minter = msg.sender;
-        _totalSupply = TFHE.asEuint64(0);
+        _totalSupply = TFHE.asEuint64(0, address(this));
         // Owning the handle is not sufficient to reveal
         // it — the committee serves reveal only against an
         // explicit per-handle grant. Supply is public by
@@ -341,12 +343,12 @@ contract ConfidentialERC20 {
     function mint(address to, uint64 amount) external {
         if (msg.sender != minter) revert NotMinter();
 
-        euint64 minted = TFHE.asEuint64(amount);
+        euint64 minted = TFHE.asEuint64(amount, to);
         _balances[to] = TFHE.add(_ensure(to), minted);
         _grantRead(_balances[to], to);
         _record(_balances[to], to);
         totalSupplyPlain += amount;
-        _totalSupply = TFHE.asEuint64(totalSupplyPlain);
+        _totalSupply = TFHE.asEuint64(totalSupplyPlain, address(this));
         // Owning the handle is not sufficient to reveal
         // it — the committee serves reveal only against an
         // explicit per-handle grant. Supply is public by
@@ -365,7 +367,7 @@ contract ConfidentialERC20 {
         _ensure(to);
 
         ebool ok = TFHE.le(amount, fromBal);
-        euint64 actual = TFHE.select(ok, amount, TFHE.asEuint64(0));
+        euint64 actual = TFHE.select(ok, amount, TFHE.asEuint64(0, address(this)));
 
         _balances[from] = TFHE.sub(fromBal, actual);
 
@@ -412,7 +414,7 @@ contract ConfidentialERC20 {
     function _ensure(address account) private returns (euint64) {
         euint64 h = _balances[account];
         if (euint64.unwrap(h) == bytes32(0)) {
-            h = TFHE.asEuint64(0);
+            h = TFHE.asEuint64(0, account);
             _balances[account] = h;
         }
         _record(h, account);
@@ -426,13 +428,19 @@ contract ConfidentialERC20 {
     /// balance. Recording is therefore additive and idempotent,
     /// and the transfer paths test membership, not identity.
     ///
-    /// INTERIM. This makes the collision survivable; it does not
-    /// address the root cause, which is that the handle preimage
-    /// carries no per-account separator, so identical operations
-    /// for different accounts derive identical handles. Binding
-    /// the submitter does not supply one: the account whose zero
-    /// this is need not be the one who sent the transaction. Whether a shared handle
-    /// denotes one underlying balance or two is not yet settled.
+    /// The COLLISION rationale for this being a set has expired:
+    /// the state-entry op now binds the account, so two accounts
+    /// no longer derive one balance handle. The set shape is kept
+    /// because it costs nothing and a single claimant would have
+    /// to be migrated if it were ever wrong.
+    ///
+    /// What has NOT expired is the guard the transfer paths read.
+    /// This contract holds compute permission on every handle it
+    /// created, so without a record of who a handle was issued to,
+    /// any account could pass another's balance handle and have
+    /// this contract move it — the confused deputy, pinned by
+    /// deputy_test.go. Removing this mapping closes one defect and
+    /// reopens that one.
     function _record(euint64 h, address account) private {
         _issuedTo[euint64.unwrap(h)][account] = true; // idempotent
     }

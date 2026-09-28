@@ -88,7 +88,7 @@ func TestExpiredGrantIsRefused(t *testing.T) {
 func TestOperatorCannotSpendAThirdPartysHandle(t *testing.T) {
 	tk := deployToken(t)
 	victim := common.HexToAddress(
-		"0x00000000000000000000000000000000000000V1")
+		"0x00000000000000000000000000000000000000f1")
 
 	tk.send(t, tk.owner, "mint", tk.owner, uint64(100))
 	tk.send(t, tk.owner, "mint", victim, uint64(500))
