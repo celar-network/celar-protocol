@@ -103,16 +103,25 @@ fn main() -> Result<()> {
     let value: u64 = 42;
 
     println!(
-        "params={} ({sk_note}) max_bits={} iters={}",
-        args.params, args.max_bits, args.iters
+        "params={} ({sk_note}) max_bits={} inputs={} iters={}",
+        args.params,
+        args.max_bits,
+        (args.max_bits / 64).max(1),
+        args.iters
     );
     println!("crs: gen {crs_secs:.2}s, {crs_bytes} bytes; pk: {pk_bytes} bytes");
 
     for load in [ZkComputeLoad::Proof, ZkComputeLoad::Verify] {
         // Warm-up (excluded), then timed iterations.
+        // Fill the CRS capacity: one u64 per 64 bits, so --max-bits 64 is the
+        // single-input admission shape and larger values measure AGGREGATION
+        // (many inputs under one proof) rather than merely sizing the CRS.
+        let n_inputs = (args.max_bits / 64).max(1);
         let prove = |m: &[u8]| -> Result<ProvenCompactCiphertextList> {
             let mut b = ProvenCompactCiphertextList::builder(&pk);
-            b.push(value);
+            for i in 0..n_inputs {
+                b.push(value.wrapping_add(i as u64));
+            }
             b.build_with_proof_packed(&crs, m, load)
                 .map_err(|e| anyhow::anyhow!("prove: {e:?}"))
         };
