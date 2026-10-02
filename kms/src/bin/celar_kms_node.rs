@@ -138,6 +138,18 @@ enum Cmd {
         #[arg(long)]
         epoch: u64,
     },
+    /// Fold the per-seat mask fragments (`mask_result_NNN.json`) into the mask
+    /// BATCH COMMITMENT — the audit-selection pre-image of the commit-to-seed
+    /// control. Checks every seat reported, the committee agrees on shape, and
+    /// every contributor carries one seed commitment per block; writes
+    /// `mask-batch.json` with the folded commitment and the beacon rule (audit
+    /// selection must mix external entropy produced AFTER this file exists, so
+    /// the last dealer cannot steer which contributions are opened).
+    MaskCollect {
+        /// Dir holding the collected `mask_result_NNN.json` fragments.
+        #[arg(long, default_value = "ceremony")]
+        dir: PathBuf,
+    },
     /// Run this node's side of a DISTRIBUTED upward reshare over mTLS — an
     /// in-place degree raise on the committee (§7.5). Reads this seat's old
     /// share from --in, writes its new degree-`new-degree` share to --out.
@@ -461,6 +473,116 @@ async fn main() -> Result<()> {
             // DECRYPT-OK, then keeps serving until the process is stopped (peers
             // may still need this seat's robust-open messages).
             run_distributed_decrypt(&cfg, &inputs).await?;
+            Ok(())
+        }
+        Cmd::MaskCollect { dir } => {
+            use celar_kms::node::{MaskResultFragment, MASK_RESULT_SCHEMA};
+
+            // Load every mask fragment in role order.
+            let mut frags: Vec<MaskResultFragment> = Vec::new();
+            for entry in fs::read_dir(&dir)? {
+                let path = entry?.path();
+                let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                if name.starts_with("mask_result_") && name.ends_with(".json") {
+                    let f: MaskResultFragment =
+                        serde_json::from_str(&fs::read_to_string(&path)?)
+                            .with_context(|| format!("parsing {}", path.display()))?;
+                    if f.schema != MASK_RESULT_SCHEMA {
+                        bail!("{}: unknown mask-fragment schema {:?}", path.display(), f.schema);
+                    }
+                    frags.push(f);
+                }
+            }
+            if frags.is_empty() {
+                bail!("no mask_result_*.json in {}", dir.display());
+            }
+            frags.sort_by_key(|f| f.role);
+
+            // Every seat present, one fragment each, committee shape agreed.
+            let first = frags[0].clone();
+            if frags.len() != first.parties {
+                bail!(
+                    "found {}/{} mask fragments — mask round incomplete, refusing to collect",
+                    frags.len(),
+                    first.parties
+                );
+            }
+            let mut seen = std::collections::HashSet::new();
+            for f in &frags {
+                if f.parties != first.parties
+                    || f.degree != first.degree
+                    || f.contributors != first.contributors
+                    || f.n_blocks != first.n_blocks
+                {
+                    bail!(
+                        "mask fragment {} disagrees on shape (parties={}, degree={}, contributors={}, blocks={})",
+                        f.role, f.parties, f.degree, f.contributors, f.n_blocks
+                    );
+                }
+                if f.role == 0 || f.role > first.parties || !seen.insert(f.role) {
+                    bail!("mask fragment role {} invalid or duplicated", f.role);
+                }
+            }
+
+            // Every contributor carries exactly one seed commitment per block;
+            // non-contributors carry none. A contributor without commitments is
+            // a pre-commit-to-seed fragment and cannot be folded.
+            let mut entries: Vec<(usize, u64, [u8; 32])> = Vec::new();
+            for f in &frags {
+                match (&f.seed_commitments, f.role <= f.contributors) {
+                    (Some(cs), true) => {
+                        if cs.len() != f.n_blocks {
+                            bail!(
+                                "contributor {} carries {} seed commitments, expected {}",
+                                f.role, cs.len(), f.n_blocks
+                            );
+                        }
+                        for (block, hexc) in cs.iter().enumerate() {
+                            let raw = hex::decode(hexc).with_context(|| {
+                                format!("contributor {} block {block}: commitment is not hex", f.role)
+                            })?;
+                            let c: [u8; 32] = raw.as_slice().try_into().map_err(|_| {
+                                anyhow::anyhow!(
+                                    "contributor {} block {block}: commitment is not 32 bytes",
+                                    f.role
+                                )
+                            })?;
+                            entries.push((f.role, block as u64, c));
+                        }
+                    }
+                    (None, true) => bail!(
+                        "contributor {} carries no seed commitments — a fragment from \
+                         before the commit-to-seed control; refuse rather than fold a \
+                         batch the audit cannot open",
+                        f.role
+                    ),
+                    (Some(_), false) => bail!(
+                        "non-contributor {} carries seed commitments — shape confusion",
+                        f.role
+                    ),
+                    (None, false) => {}
+                }
+            }
+            let bc = celar_kms::mask_supply::mask_batch_commitment(&entries);
+
+            let manifest = serde_json::json!({
+                "schema": "celar-mask-batch/v1",
+                "parties": first.parties,
+                "degree": first.degree,
+                "contributors": first.contributors,
+                "n_blocks": first.n_blocks,
+                "batch_commitment": hex::encode(bc),
+                "audit_beacon_rule": "audit selection = H(domain || batch_commitment || external_entropy), where external_entropy MUST be produced after this file exists (e.g. the chain's proposer-independent randomness beacon) — the batch commitment is dealer-derived, so selection without post-seal entropy is steerable by the last dealer. Opened contributions are discarded, never used as masks.",
+            });
+            fs::write(dir.join("mask-batch.json"), serde_json::to_string_pretty(&manifest)?)?;
+            println!(
+                "MASK-COLLECT-OK {} fragments, {} contributors x {} blocks, batch commitment {} → {}",
+                frags.len(),
+                first.contributors,
+                first.n_blocks,
+                hex::encode(bc),
+                dir.join("mask-batch.json").display()
+            );
             Ok(())
         }
         Cmd::MaskContribute {

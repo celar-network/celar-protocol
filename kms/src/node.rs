@@ -1256,6 +1256,15 @@ pub struct MaskResultFragment {
     pub contributors: usize,
     pub n_blocks: usize,
     pub mask_shares_sha256: String,
+    /// CONTRIBUTORS ONLY: this dealer's per-block seed commitments (hex, index
+    /// = block) — `mask_supply::seed_commitment` over the VRF-mixed seed each
+    /// block's term was derived from. The commit-to-seed control: `mask-collect`
+    /// folds every dealer's commitments into the batch commitment (the
+    /// audit-selection pre-image), and the audit binds a dealer to its seed by
+    /// open-and-recompute. Optional + serde-default so pre-existing fragments
+    /// parse unchanged (schema stays v1; additive field).
+    #[serde(default)]
+    pub seed_commitments: Option<Vec<String>>,
     pub wall_secs: f64,
 }
 
@@ -1380,21 +1389,35 @@ pub async fn run_distributed_mask_contribution(
     // so a fleet-wide local-RNG failure stays "predictable to the seat" rather
     // than "to the coalition". Non-contributors input nothing but still receive
     // and sum shares.
-    let my_terms: Option<Vec<Poly>> = if cfg.role <= contributors {
-        let mut local = AesRng::from_random_seed();
-        let mut terms = Vec::with_capacity(n_blocks);
-        for block in 0..n_blocks {
-            let vrf_out = vrf_contribution_output(signing_key_path, epoch, block as u64)?;
-            let mut local_entropy = [0u8; 32];
-            local.fill_bytes(&mut local_entropy);
-            let seed =
-                crate::mask_supply::vrf_mixed_contribution_seed(&vrf_out, &local_entropy);
-            terms.push(crate::mask_supply::contribution_term_from_seed(&seed));
-        }
-        Some(terms)
-    } else {
-        None
-    };
+    //
+    // A contributor also COMMITS to each block's seed (commit-to-seed, the
+    // adopted audit shape): the commitment goes into this seat's result
+    // fragment, `mask-collect` folds all dealers' commitments into the batch
+    // commitment, and the audit later opens beacon-selected seeds and
+    // recomputes. The seeds themselves never leave this function.
+    let (my_terms, my_seed_commitments): (Option<Vec<Poly>>, Option<Vec<String>>) =
+        if cfg.role <= contributors {
+            let mut local = AesRng::from_random_seed();
+            let mut terms = Vec::with_capacity(n_blocks);
+            let mut commitments = Vec::with_capacity(n_blocks);
+            for block in 0..n_blocks {
+                let vrf_out = vrf_contribution_output(signing_key_path, epoch, block as u64)?;
+                let mut local_entropy = [0u8; 32];
+                local.fill_bytes(&mut local_entropy);
+                let seed =
+                    crate::mask_supply::vrf_mixed_contribution_seed(&vrf_out, &local_entropy);
+                terms.push(crate::mask_supply::contribution_term_from_seed(&seed));
+                commitments.push(hex::encode(crate::mask_supply::seed_commitment(
+                    epoch,
+                    cfg.role,
+                    block as u64,
+                    &seed,
+                )));
+            }
+            (Some(terms), Some(commitments))
+        } else {
+            (None, None)
+        };
 
     // Networked SYNC session at the MASK degree. robust_input shares at
     // session.threshold(), so the threshold IS the sharing degree here; the only
@@ -1433,6 +1456,7 @@ pub async fn run_distributed_mask_contribution(
         contributors,
         n_blocks,
         mask_shares_sha256: digest,
+        seed_commitments: my_seed_commitments,
         wall_secs,
     };
     fs::create_dir_all(&cfg.out_dir)?;
@@ -1836,6 +1860,40 @@ mod mask_dealing_tests {
     use threshold_execution::runtime::sessions::small_session::SmallSession;
     use threshold_execution::tests::helper::tests_and_benches::execute_protocol_small;
     use threshold_types::network::NetworkMode;
+
+    /// Condition on the VRF construction, asserted as a NEGATIVE test: the
+    /// operational key signs exactly two message families — endorsement digests
+    /// (the digest's 64 lowercase-hex bytes) and VRF contribution inputs
+    /// (DOMAIN ‖ epoch(8) ‖ index(8)). The key is the same key, so if one
+    /// family's bytes could be a member of the other, a signature obtained on
+    /// one path would be valid on the other and the VRF output would be
+    /// revealable through the endorsement path. The spaces must be structurally
+    /// disjoint, in both directions, for every input.
+    #[test]
+    fn vrf_input_space_is_disjoint_from_the_endorsement_message_space() {
+        // Direction 1: no VRF input is a valid endorsement message. An
+        // endorsement message is exactly 64 bytes, all lowercase hex. Every
+        // VRF input is 45 bytes (domain 29 + epoch 8 + index 8) and its domain
+        // carries bytes outside [0-9a-f] — both checks, so a future domain or
+        // field change cannot silently restore the overlap via either property.
+        for (epoch, index) in [(0u64, 0u64), (1, 2), (u64::MAX, u64::MAX), (1790441568, 15)] {
+            let msg = vrf_contribution_msg(epoch, index);
+            assert_ne!(msg.len(), 64, "VRF input must not be endorsement-length");
+            assert!(
+                msg.iter().any(|b| !b.is_ascii_digit() && !(b'a'..=b'f').contains(b)),
+                "VRF input must carry bytes outside the lowercase-hex alphabet"
+            );
+        }
+        // Direction 2: no endorsement message can begin with the VRF domain —
+        // the domain itself contains non-hex bytes, so no hex string has it as
+        // a prefix. Asserted on the domain, not an example message.
+        assert!(
+            VRF_CONTRIBUTION_DOMAIN
+                .bytes()
+                .any(|b| !b.is_ascii_digit() && !(b'a'..=b'f').contains(&b)),
+            "the VRF domain must not be spellable in lowercase hex"
+        );
+    }
 
     /// The distributed dealing, driven in-process over the sim network: the mask
     /// share each seat holds must reconstruct — at the MASK DEGREE — to the SUM of

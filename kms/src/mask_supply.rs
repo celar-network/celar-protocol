@@ -412,6 +412,64 @@ pub fn build_batch_from_seeds(
     builder.seal()
 }
 
+/// Domain separator for a dealer's per-block SEED COMMITMENT — the
+/// commit-to-seed control adopted by the security review of contribution
+/// randomness: the audit binds the SEED (open-and-recompute) rather than the
+/// VRF output, which is what makes the deterministic-signature VRF choice
+/// defensible. The commitment is over H(seed), never the seed itself, so the
+/// commitment reveals nothing and the audit opens seeds selectively.
+pub const SEED_COMMIT_DOMAIN: &[u8] = b"celar.kms.mask.seed-commitment.v1";
+
+/// Domain separator for the batch commitment folding all dealers' per-block
+/// seed commitments — the audit-selection pre-image. The audit beacon mixes
+/// POST-SEAL external entropy with this value (selection = H(domain ‖ batch
+/// commitment ‖ entropy produced after the batch exists)), so the last dealer
+/// cannot steer which contributions are opened.
+pub const BATCH_SEED_COMMIT_DOMAIN: &[u8] = b"celar.kms.mask.batch-seed-commitment.v1";
+
+/// A dealer's commitment to its contribution seed for one block:
+///
+///   C = SHA-256(DOMAIN ‖ epoch ‖ dealer ‖ block ‖ SHA-256(seed))
+///
+/// Deterministic in its inputs, hiding (the seed enters only through its
+/// hash), and position-bound (epoch, dealer, block are all in the preimage, so
+/// a commitment cannot be replayed for a different slot). The audit opens a
+/// seed and recomputes this; equality binds the dealer to the seed its shares
+/// were derived from — the honest-but-buggy detection posture, with malicious
+/// soundness deliberately left to the proof relation.
+pub fn seed_commitment(epoch: u64, dealer: usize, block: u64, seed: &[u8; 32]) -> [u8; 32] {
+    let mut inner = Sha256::new();
+    inner.update(seed);
+    let seed_hash = inner.finalize();
+    let mut h = Sha256::new();
+    h.update(SEED_COMMIT_DOMAIN);
+    h.update(epoch.to_be_bytes());
+    h.update((dealer as u64).to_be_bytes());
+    h.update(block.to_be_bytes());
+    h.update(seed_hash);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&h.finalize());
+    out
+}
+
+/// Fold all dealers' per-block seed commitments into the batch commitment —
+/// sorted by (dealer, block) so the value is independent of arrival order.
+/// Entries are `(dealer, block, commitment)`.
+pub fn mask_batch_commitment(entries: &[(usize, u64, [u8; 32])]) -> [u8; 32] {
+    let mut sorted: Vec<&(usize, u64, [u8; 32])> = entries.iter().collect();
+    sorted.sort_unstable_by_key(|(d, b, _)| (*d, *b));
+    let mut h = Sha256::new();
+    h.update(BATCH_SEED_COMMIT_DOMAIN);
+    for (dealer, block, c) in sorted {
+        h.update((*dealer as u64).to_be_bytes());
+        h.update(block.to_be_bytes());
+        h.update(c);
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&h.finalize());
+    out
+}
+
 /// Derive one seat's flooding term deterministically from its per-seat
 /// contribution seed — the SAME magnitude+sign draw [`build_batch_from_seeds`]
 /// makes for a given seed, factored out so the DISTRIBUTED dealer (node side,
@@ -455,6 +513,29 @@ mod tests {
             vrf_mixed_contribution_seed(b"ab", &ent),
             vrf_mixed_contribution_seed(b"a", &ent),
         );
+    }
+
+    #[test]
+    fn seed_commitment_is_deterministic_position_bound_and_order_free() {
+        let seed = [5u8; 32];
+        let c = seed_commitment(7, 3, 2, &seed);
+        // Deterministic.
+        assert_eq!(c, seed_commitment(7, 3, 2, &seed));
+        // Bound to every position component and to the seed.
+        assert_ne!(c, seed_commitment(8, 3, 2, &seed), "epoch not bound");
+        assert_ne!(c, seed_commitment(7, 4, 2, &seed), "dealer not bound");
+        assert_ne!(c, seed_commitment(7, 3, 3, &seed), "block not bound");
+        assert_ne!(c, seed_commitment(7, 3, 2, &[6u8; 32]), "seed not bound");
+
+        // Batch commitment: order-independent, content-sensitive.
+        let e1 = (1usize, 0u64, seed_commitment(7, 1, 0, &[1u8; 32]));
+        let e2 = (2usize, 0u64, seed_commitment(7, 2, 0, &[2u8; 32]));
+        let e3 = (1usize, 1u64, seed_commitment(7, 1, 1, &[3u8; 32]));
+        let a = mask_batch_commitment(&[e1, e2, e3]);
+        let b = mask_batch_commitment(&[e3, e1, e2]);
+        assert_eq!(a, b, "batch commitment must not depend on arrival order");
+        let c2 = mask_batch_commitment(&[e1, e2]);
+        assert_ne!(a, c2, "batch commitment must cover every entry");
     }
 
     #[test]
