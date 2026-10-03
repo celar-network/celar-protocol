@@ -138,6 +138,46 @@ enum Cmd {
         #[arg(long)]
         epoch: u64,
     },
+    /// Attestably erase this seat's SUPERSEDED share after a refresh: scan the
+    /// configured retention sites for copies (exact or embedded), zeroize and
+    /// unlink the old share, probe swap/core-dump state, and write a signed
+    /// erasure attestation. Run only AFTER the refreshed epoch has been
+    /// verified (the new share decrypts) — erasure is irreversible.
+    EraseSuperseded {
+        #[arg(long)]
+        config: PathBuf,
+        /// Dir holding the SUPERSEDED share file for this seat (the refresh's
+        /// input dir — the old epoch's shares).
+        #[arg(long = "in", value_name = "DIR")]
+        in_dir: PathBuf,
+        /// The refresh epoch this erasure belongs to (same value across seats).
+        #[arg(long)]
+        epoch: u64,
+        /// Retention sites to scan (repeatable): backup dirs, snapshot dirs,
+        /// dump dirs — wherever this operator's retention could hold a copy.
+        #[arg(long = "scan", value_name = "PATH")]
+        scan_sites: Vec<PathBuf>,
+    },
+    /// THE ERASURE AUDIT GATE: verify every seat's erasure attestation for one
+    /// refresh epoch against the roster and the superseded shares' recorded
+    /// commitments. Refuses — naming the seat — on any missing or invalid
+    /// attestation, any retention finding, or any dirty environment. An epoch
+    /// is complete only when this passes.
+    ErasureCollect {
+        /// Dir holding the collected `erasure_attestation_NNN.json` files.
+        #[arg(long, default_value = "ceremony")]
+        dir: PathBuf,
+        /// Roster file (signing pubkeys the attestations verify against).
+        #[arg(long, default_value = "roster.json")]
+        roster: PathBuf,
+        /// Transcript recording the superseded shares' commitments (the OLD
+        /// epoch's transcript or reshare record).
+        #[arg(long)]
+        keys: PathBuf,
+        /// The refresh epoch being completed.
+        #[arg(long)]
+        epoch: u64,
+    },
     /// Fold the per-seat mask fragments (`mask_result_NNN.json`) into the mask
     /// BATCH COMMITMENT — the audit-selection pre-image of the commit-to-seed
     /// control. Checks every seat reported, the committee agrees on shape, and
@@ -473,6 +513,110 @@ async fn main() -> Result<()> {
             // DECRYPT-OK, then keeps serving until the process is stopped (peers
             // may still need this seat's robust-open messages).
             run_distributed_decrypt(&cfg, &inputs).await?;
+            Ok(())
+        }
+        Cmd::EraseSuperseded {
+            config,
+            in_dir,
+            epoch,
+            scan_sites,
+        } => {
+            use celar_kms::erasure::{attest_erasure, erasure_attestation_file, EnvironmentProbe};
+            use celar_kms::transcript::share_file;
+
+            let cfg = NodeConfig::load(&config)?;
+            let signing_key = cfg.signing_key.clone().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "node config has no signing_key; the operational key signs the erasure attestation"
+                )
+            })?;
+            let share_path = in_dir.join(share_file(cfg.role));
+            let att = attest_erasure(
+                &signing_key,
+                cfg.role,
+                epoch,
+                &share_path,
+                &scan_sites,
+                EnvironmentProbe::observe(),
+            )?;
+            fs::create_dir_all(&cfg.out_dir)?;
+            let out = cfg.out_dir.join(erasure_attestation_file(cfg.role));
+            fs::write(&out, serde_json::to_string_pretty(&att)?)?;
+            if att.findings.is_empty() {
+                println!(
+                    "ERASE-OK role={} epoch={epoch} share zeroized, {} site(s) scanned clean, attestation {}",
+                    cfg.role,
+                    att.scanned_sites.len(),
+                    out.display()
+                );
+            } else {
+                // The attestation is still written — the audit gate is what
+                // refuses; hiding the finding here would defeat the control.
+                println!(
+                    "ERASE-FINDINGS role={} epoch={epoch}: {} retention finding(s) — attestation written, the audit WILL refuse this epoch: {}",
+                    cfg.role,
+                    att.findings.len(),
+                    out.display()
+                );
+            }
+            Ok(())
+        }
+        Cmd::ErasureCollect {
+            dir,
+            roster,
+            keys,
+            epoch,
+        } => {
+            use celar_kms::committee::CommitteeRoster;
+            use celar_kms::erasure::{audit_erasure_attestations, ErasureAttestation};
+            use celar_kms::reshare::ReshareTranscript;
+            use celar_kms::transcript::Transcript;
+
+            // Attestations, one per seat.
+            let mut atts: Vec<ErasureAttestation> = Vec::new();
+            for entry in fs::read_dir(&dir)? {
+                let path = entry?.path();
+                let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                if name.starts_with("erasure_attestation_") && name.ends_with(".json") {
+                    atts.push(
+                        serde_json::from_str(&fs::read_to_string(&path)?)
+                            .with_context(|| format!("parsing {}", path.display()))?,
+                    );
+                }
+            }
+            if atts.is_empty() {
+                bail!("no erasure_attestation_*.json in {}", dir.display());
+            }
+
+            // Expected per role: rostered signing pubkey + the SUPERSEDED
+            // share's recorded commitment (the OLD epoch's record — prefer a
+            // reshare record, else the genesis transcript).
+            let roster: CommitteeRoster =
+                serde_json::from_str(&fs::read_to_string(&roster)?).context("parsing roster")?;
+            let reshare_path = keys.join("reshare.json");
+            let old_records: Vec<(usize, String)> = if reshare_path.exists() {
+                let p = ReshareTranscript::load(&reshare_path)?;
+                p.parties.iter().map(|r| (r.role, r.share_commitment_sha256.clone())).collect()
+            } else {
+                let p = Transcript::load(&keys.join("transcript.json"))?;
+                p.parties.iter().map(|r| (r.role, r.share_commitment_sha256.clone())).collect()
+            };
+            let mut expected = std::collections::BTreeMap::new();
+            for (role, commitment) in old_records {
+                let pubkey = roster
+                    .members
+                    .iter()
+                    .find(|m| m.role == role)
+                    .map(|m| m.signing_pubkey.clone())
+                    .ok_or_else(|| anyhow::anyhow!("role {role} not in roster"))?;
+                expected.insert(role, (pubkey, commitment));
+            }
+
+            audit_erasure_attestations(&atts, &expected, epoch)?;
+            println!(
+                "ERASURE-AUDIT-OK epoch={epoch}: {} seats attested, zero findings, environments clean — epoch may be marked complete",
+                atts.len()
+            );
             Ok(())
         }
         Cmd::MaskCollect { dir } => {

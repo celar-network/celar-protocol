@@ -1893,6 +1893,23 @@ mod mask_dealing_tests {
                 .any(|b| !b.is_ascii_digit() && !(b'a'..=b'f').contains(&b)),
             "the VRF domain must not be spellable in lowercase hex"
         );
+
+        // THIRD family under the same key: erasure attestations. Their signed
+        // bytes begin with the erasure domain, so pairwise disjointness needs:
+        // not spellable in lowercase hex (vs endorsements), and neither domain
+        // a prefix of the other (vs VRF inputs).
+        let erasure = crate::erasure::ERASURE_SIGN_DOMAIN;
+        assert!(
+            erasure
+                .bytes()
+                .any(|b| !b.is_ascii_digit() && !(b'a'..=b'f').contains(&b)),
+            "the erasure domain must not be spellable in lowercase hex"
+        );
+        assert!(
+            !erasure.starts_with(VRF_CONTRIBUTION_DOMAIN)
+                && !VRF_CONTRIBUTION_DOMAIN.starts_with(erasure),
+            "the VRF and erasure domains must not be prefixes of each other"
+        );
     }
 
     /// The distributed dealing, driven in-process over the sim network: the mask

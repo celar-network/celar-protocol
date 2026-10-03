@@ -23,6 +23,7 @@ pub mod config;
 pub mod decrypt;
 pub mod degree_decrypt;
 pub mod dkg;
+pub mod erasure;
 pub mod fraud;
 pub mod header_trust;
 pub mod ics23_verify;
